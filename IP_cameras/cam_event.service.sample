@@ -1,0 +1,14 @@
+[Unit]
+Description=Security cameras MQTT event daemon
+After=syslog.target network.target
+
+[Service]
+User=smarthome
+Group=smarthome
+ExecStart=/etc/smarthome/cams/cam_event.pl -m
+WorkingDirectory=/etc/smarthome/cams
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

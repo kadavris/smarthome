@@ -1,0 +1,4 @@
+load_config( 'cam_common.config' );
+
+$o{ 'cloud id' } = '<rclone id>';
+$o{ 'cloud path' }  = '<sub-folder in the cloud>';

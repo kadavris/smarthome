@@ -1,0 +1,18 @@
+load_config( 'cam_common.config' );
+load_config( 'cam_rtsp.config' ); # for cameras names mostly
+
+$o{ 'default snap time' } = 60; # Seconds. Also snap this much before and after the current time
+
+# MQTT daemon (-m key):
+$o{ 'mqtt server' } = '127.0.0.1';
+$o{ 'mqtt topic' }  = 'hw/cameras/+/ctl/save';
+   # message format: <event id/name>,once|persistent on/off,<cameras list to save from>
+   # e.g. "Entrance door opened,once,camera-entrance" - will save records marked as from "camera-entrance", with event name prepended.
+$o{ 'mqtt persistent timeout' } = 20 * 60;     # Seconds for persistent save to be stopped if no OFF message arrived
+
+# MQTT Security stuff:
+$o{ 'mqtt user' } = 'someuser';  # user/pass overrides SSL
+$o{ 'mqtt pass' } = 'password';
+$o{ 'mqtt ssl ca' }  = '/etc/ssl/cert'; # SSL_ca_path
+$o{ 'mqtt ssl crt' } = $o{ 'base dir' } . '/ssl/mqtt.crt'; # SSL_cert_file
+$o{ 'mqtt ssl key' } = $o{ 'base dir' } . '/ssl/mqtt.key'; # SSL_key_file

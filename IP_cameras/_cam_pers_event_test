@@ -1,0 +1,6 @@
+#!/bin/sh
+set -x
+su smarthome -s /bin/sh -c './cam_event.pl -d -p on -e test entrance' &
+sleep 60
+su smarthome -s /bin/sh -c './cam_event.pl -p off -e test entrance'
+

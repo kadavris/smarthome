@@ -1,0 +1,2 @@
+#!/bin/sh
+su smarthome -s /bin/sh -c './cam_event.pl -e test entrance'

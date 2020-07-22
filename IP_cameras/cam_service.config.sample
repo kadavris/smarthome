@@ -1,0 +1,7 @@
+# !!! permissions should be secure !!!
+load_config( 'cam_common.config' );
+load_config( 'cam_rtsp.config' );
+
+# ffmpeg tend to hung on long runs, so it is better to keep clips short.
+# Also the short clips gets faster to backup...
+$o{ 'default segment time' } = 20; # Seconds

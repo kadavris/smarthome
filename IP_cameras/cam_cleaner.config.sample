@@ -1,0 +1,3 @@
+load_config( 'cam_common.config' );
+# There is no configurable stuff here yet.
+# All in the common config

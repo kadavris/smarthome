@@ -1,0 +1,12 @@
+#!/bin/sh
+sb=/bin/systemctl
+
+su smarthome -l -s /bin/sh -c /etc/smarthome/cams/cam_cleaner.pl
+
+# make it slighly less stuck ;)
+for c in balcony entrance kitchen
+do
+  $sb --quiet is-enabled cam_proxy@$c && { $sb restart cam_proxy@$c; sleep 15; }
+
+  $sb --quiet is-enabled cam_service@$c && $sb restart cam_service@$c
+done

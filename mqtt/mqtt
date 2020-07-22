@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+# Written by Andrej Pakhutin (pakhutin at gmail) as a excercise in python.
+# helper to send/subscribe messages with MQTT
+import argparse
+import configparser
+import json
+import os.path
+import paho.mqtt.client as mqtt
+import re
+import ssl
+import sys
+
+#############################################################
+def load_config( c_file ):
+	global config
+
+	file = c_file
+
+	if not os.path.exists( file ):
+		if re.search( '\/', file ):
+			print( "Can't open config: " + file )
+			sys.exit(1)
+
+		file = os.path.dirname( sys.argv[0] ) + '/' + c_file
+
+	args.debug and print( "+ Loading config: " + file )
+
+	config = configparser.ConfigParser()
+	config.read( file )
+
+####################################################
+# The callback for debugging
+def on_log( client, userdata, level, buf ):
+	print ( '+', buf)
+
+####################################################
+# The callback for when the client receives a CONNACK response from the server.
+def on_connect( client, userdata, flags, rc ):
+	global args
+
+	pass
+
+####################################################
+# global simplifier of things
+def connect():
+	global config,client_conn,connected,server
+
+	client_conn.on_connect = on_connect
+
+	client_conn.connect( server, port = int( config[ server ][ 'port' ] ),
+		keepalive = int( config[ server ][ 'keepalive' ] ) )
+
+	connected = True
+
+	client_conn.loop_start()
+
+####################################################
+# The callback for when a PUBLISH message is received from the server.
+def on_message( client, userdata, msg ):
+	print( '{ "subscription":"' + msg.topic + '", "message":"' + str( msg.payload ).replace( '"', '\"' ) + '" }' )
+
+####################################################
+# The callback for when a PUBLISH has been done
+def on_publish( client, userdata, mid ):
+	if not mid in mids:
+		print( '{ "message":"untracked message callback detected", rc:0, "id":' + str( mid ) + ' }' )
+		return
+
+	( t, msg ) = mids[ mid ]
+	del mids[ mid ]
+	print( '{ "message":"published", "rc":0, "id":' + str( mid ) +
+		', "topic":"' + t + '", "payload":"' + msg.replace( '"', '\"' ) + '" }' )
+
+####################################################
+def subscribe( client, topic ):
+	( r, mid ) = client.subscribe( topic )
+	if r != mqtt.MQTT_ERR_SUCCESS:
+		print( '{ "message":"subscribe failed", "rc":' + str( r ) + ', "topic":"' + topic + '" }' )
+		return False
+
+	print( '{ "message":"subscribed", "rc":' + str( r ) + ', "topic":"' + topic + '" }' )
+	return True
+
+####################################################
+def sub_loop():
+	global args,client_conn
+
+	client_conn.on_message = on_message
+
+	for t in args.topics:
+		if not subscribe( client_conn, t ):
+			sys.exit(1)
+
+	client_conn.loop_forever( timeout = 1.0, max_packets = 1, retry_first_connection = False )
+
+	sys.exit(1)
+
+####################################################
+def go_stdin():
+	global args,client_conn,connected,mids
+	client_conn.on_message = on_message
+#	client_conn.on_publish = on_publish
+
+	while not sys.stdin.closed:
+		l = sys.stdin.readline()
+
+		try:
+			j = json.loads( l )
+		except:
+			print( '{ "message":"invalid json", "rc":1 }' )
+			continue
+
+		if args.debug:
+			print( "+ got json: '" + l.strip() + "'" )
+
+		# { "user":"name", "password":"..." }
+		if 'user' in j:
+			client_conn.username_pw_set( j['user'], password = j[ 'password' ] if 'password' in j else None )
+			continue
+
+		# { "cmd":"something" }
+		if 'cmd' in j: # specials
+			if j['cmd'] == 'exit': # exit/done
+				break
+
+		if not connected:
+			connect()
+
+		# { "publish":"message", "topics":[], "retain":bool, qos:num }
+		if 'publish' in j:
+			mi = client_conn.publish( t, j['publish'],
+								qos = j[ 'qos' ] if 'qos' in j else 0,
+								retain = 'retain' in j and j['retain'] )
+			mi.wait_for_publish()
+			#mids[ mi.mid ] = ( t, j['publish'] ) # tracker
+			print( '{ "message":"published", "rc":0, "id":' + str( mi.mid ) +
+					', "topic":"' + t + '", "payload":"' + j['publish'].replace( '"', '\"' ) + '" }' )
+
+		# { "will":"message", "topic":[], "retain":bool, qos:num }
+		if 'will' in j:
+			for t in j['topics']:
+				mi = client.will_set( t, payload = j[ 'will' ],
+									 qos = j[ 'qos' ] if 'qos' in j else 0,
+									 retain = 'retain' in j and j['retain'] )
+				mi.wait_for_publish()
+				#mids[ mi.mid ] = ( t, j['publish'] ) # tracker
+				print( '{ "message":"published", "rc":0, "id":' + str( mi.mid ) +
+					', "topic":"' + t + '", "payload":"' + j[ 'will' ].replace( '"', '\"' ) + '" }' )
+
+		# { "subscribe":[topics] }
+		elif 'subscribe' in j:
+			for t in j['subscribe']:
+				subscribe( client_conn, t )
+
+		# { "unsubscribe":[topics] }
+		elif 'unsubscribe' in j:
+			for t in j['unsubscribe']:
+				( r, mid ) = client_conn.unsubscribe( t )
+				if r == mqtt.MQTT_ERR_SUCCESS:
+					print( '{ "message":"unsubsribed", "rc":' + str( r ) + ' }' )
+				else:
+					print( '{ "message":"unsubsribe failed", "rc":' + str( r ) + ' }' )
+
+		else:
+			print( '{ "message":"unknown command", "rc":1 }' )
+
+	client_conn.loop_stop()
+	client_conn.disconnect()
+
+	sys.exit(1)
+
+####################################################
+####################################################
+global args, config, connected, client_conn, mids, server
+
+connected = False # for handling stuff in stdin mode
+mids = dict() # to track messages in stdin mode
+
+####################################################
+
+parser = argparse.ArgumentParser( description='Send or subscribe to mqtt messages' )
+
+parser.add_argument( '-c', dest='config_path', action='store', default='mqtt.ini', help='path to config file')
+parser.add_argument( '-d', dest='debug', action='store_true', default=False,  help='debug mode')
+parser.add_argument( '-i', dest='stdin_mode', action='store_true', default=False, help='work in stdin mode, accepting multiple commands in json' )
+parser.add_argument( '-m', dest='message', action='store', help='message to send' )
+parser.add_argument( '-q', dest='qos', action='store', help='Quality of service code (0-2)' )
+parser.add_argument( '-r', dest='retain', action='store_true', default=False, help='retain mode' )
+parser.add_argument( '-s', dest='subscribe', action='store_true', default=False, help='subscribe to topic(s)' )
+parser.add_argument( '-t', dest='topics', action='append', help='topic to send to or topic(s) to subscribe' )
+parser.add_argument( '-u', dest='username', action='store', default='', help='user name' )
+parser.add_argument( 'server', nargs='?', default='', help='server name, if not default one' )
+
+args = parser.parse_args()
+
+load_config( args.config_path );
+
+client_conn = mqtt.Client()
+
+if args.debug:
+	client_conn.on_log=on_log
+	client_conn.enable_logger()
+
+server = args.server
+if server == '': #get default
+	server = config[ 'DEFAULT' ][ 'server' ]
+
+if not server in config:
+	print( "Server", server, " not in .ini file" )
+	sys.exit(1)
+
+if args.debug:
+	print( "Server", server )
+
+if args.username != '': # use to switch ACLs
+	client_conn.username_pw_set( args.username )
+
+elif config[ server ][ 'auth' ] == 'user':
+	if not 'user' in config[ server ] or not 'pass' in config[ server ]:
+		print( "! no user/password set !" )
+		sys.exit(1)
+
+	client_conn.username_pw_set( config[ server ][ 'user' ], password = config[ server ][ 'pass' ] )
+
+#--------------------------------------------
+if config[ server ][ 'auth' ] == 'ssl':
+	if args.debug:
+		print( "+ SSL mode" )
+
+	if not 'port' in config[ server ]:
+		config[ server ][ 'port' ] = '1883'
+
+	#context = ssl.create_default_context()
+	#context.verify_mode = ssl.CERT_REQUIRED
+	#context.check_hostname = True
+	#context.load_default_certs()
+	#client_conn.tls_set_context( context )
+
+	client_conn.tls_set( ca_certs = None,
+		certfile = config[ server ][ 'crt' ],
+		keyfile  = config[ server ][ 'key' ],
+		cert_reqs = ssl.CERT_REQUIRED, tls_version = ssl.PROTOCOL_TLS, ciphers = None
+		#SSL_ca_path   => config[ server ][ 'capath' ] # use system default
+		#SSL_ca_file   => config[ server ][ 'cafile' ]
+	)
+else:
+	if not 'port' in config[ server ]:
+		config[ server ][ 'port' ] = '1883'
+
+if not 'keepalive' in config[ server ]:
+	config[ server ][ 'keepalive' ] = '20'
+
+#--------------------------------------------
+if args.stdin_mode:
+	go_stdin()
+
+#--------------------------------------------
+if args.topics == None:
+	print( "Topic(s) are undefined!" )
+	sys.exit(1)
+
+connect()
+
+if args.subscribe:
+	sub_loop()
+	sys.exit(1)
+
+#--------------------------------------------
+if args.message == None:
+	print( "Message is undefined!" )
+	sys.exit(1);
+
+for t in args.topics:
+	client_conn.publish( t, args.message, retain = args.retain ).wait_for_publish()
+	if args.debug:
+		print( "published to " + t + " - " + args.message )
+
+client_conn.disconnect()

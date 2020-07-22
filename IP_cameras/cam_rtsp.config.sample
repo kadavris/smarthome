@@ -1,0 +1,24 @@
+# This is RTSP cameras configuration to be used across all scripts
+# live555 proxy outputs are like: rtsp://<ip>:<port>/proxyStream
+# but it is working bad and disabled.
+# This stuff is slightly ill-concieved, I know.
+%cams = (
+  'camera-name' => {
+      'source' => q~rtsp://admin:admin@cam-address:554/user=admin_password=admin_channel=1_stream=0.sdp?real_stream~,
+      'record from' => 'rtsp://10.1.1.1:11556/proxyStream', # if proxy is enabled
+#      'proxy port' => 11556, # if commented-out then cam_service will use 'source' instead of 'record from'
+      'proto' => 'rtsp', # only rtsp understood now
+# the stuff below was planned for future use:
+      'v-codec' => 'h264',
+      'width' => 1280,
+      'height' => 720,
+      'a-codec' => '',
+      'bitrate' => 2300,
+      'ffmpeg options' => '',
+      'zone' => 'e', # see common.conf %zones
+  },
+
+  'some-other-camera' => {...
+  },
+  ...
+);

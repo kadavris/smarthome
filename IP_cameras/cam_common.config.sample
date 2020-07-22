@@ -1,0 +1,65 @@
+# this is for most common settings.
+# ! don't place here what's others shouldn't know !
+
+$o{ 'whine email' } = '<your email or left empty>';
+$o{ 'smarthome base' } = '/etc/smarthome/'; # maybe unneeded already
+
+$o{ 'log dir' } = '/var/log/smarthome'; # standard logging place
+
+$o{ 'base dir' } = '/var/lib/smarthome/IP_Cameras'; # where all recordings and misc stuff are kept
+
+# where videos during triggered events will be placed to get synced later
+$o{ 'events dir' } = $o{ 'base dir' } . '/events';
+  $o{ 'sync flag' } = $o{ 'events dir' } . '/syncnow'; # flag for sync daemon to indicate the events need to be synced NOW
+
+$o{ 'pid dir' } = $o{ 'base dir' } . '/pid'; # where to store pid info files
+$o{ 'recent dir' } = $o{ 'base dir' } . '/recent'; # where is current/recent clips stored in bulk
+
+# the indication for continuous (on ... off) kind of events going on. see cam_event description
+$o{ 'persistent flag template' } = '/tmp/cam_event-persistent-%s';
+
+# file index templates for sprintf
+$o{ 'records index tpl' } = '%09d';
+$o{ 'records length tpl' } = '%d';
+$o{ 'records ext' } = '.mp4'; # change if your clips is in other format
+
+# video segments suffix for cam_service to write
+#   %pid% will be substituted by PID.
+#   %dt% - date & time
+#   %cam% - camera ID
+#   %index% - relative position in this sequence
+#   %seglen% - length of this segment in seconds
+# The sample below will produce name like: entrance-2020.01.01,11.22.33-236143-000000042-20.mp4
+$o{ 'records name template' } = '%cam%-%dt%-%pid%-%index%-%seglen%' . $o{ 'records ext' };
+$o{ 'records log template' } = '%cam%-%dt%-%pid%.log'; # ffmpeg output for debugging
+
+# Now what files the cam_event and cam_cleaner should look for?
+# Should be based on the template above ($o{ 'records name template' })!
+# this should be ^ to $ regexp: access by $+{ groupname }
+$o{ 'records list re' } = '(?<name>(?<cam>\w+)-(?<ts>20\d\d\.\d\d\.\d\d\,\d\d\.\d\d\.\d\d)-(?<pid>\d+)-(?<index>\d+)-(?<seglen>\d+)' . $o{ 'records ext' } . ')';
+
+# cam_cleaner stuff here:
+$o{ 'limit total size' } = 10 * 1024 * 1024 * 1024; # Bytes. Used to check free space available before service start and for cleanup
+$o{ 'limit min size' }   =  1 * 1024 * 1024 * 1024; # Bytes. If _filesystem_ is less than $o{ 'fs min free' } then lock to this total size of current recordings.
+$o{ 'fs min free' }      = 10 * 1024 * 1024 * 1024; # Bytes. Minimum free space on filesystem to maintain. See $o{ 'limit min size' }
+
+$o{ 'state file tpl' } = $o{ 'base dir' } . '/state_%cam%'; # file to report a state of recording. nagios-ready scheme: 1st line is message, 2nd line is status code
+
+####################################################
+# this stuff goes here to prevent copy-paste
+sub get_times
+{
+  my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst) = localtime(time); $year += 1900; ++$mon;
+
+  $_[0] eq 'ts' and return sprintf '%d%02d%02d%02d%02d%02d', $year, $mon, $mday, $hour, $min, $sec;
+  $_[0] eq 'd'  and return sprintf '%d.%02d.%02d', $year, $mon, $mday;
+  $_[0] eq 'h'  and return sprintf '%02d', $hour;
+  $_[0] eq 'hm' and return sprintf '%02d.%02d', $hour, $min;
+  if ( $_[0] eq 'hms' || $_[0] eq 't' )
+  {
+    return sprintf '%02d.%02d.%02d', $hour, $min, $sec;
+  }
+  $_[0] eq 'dt' and return (get_times( 'd' ) . ',' . get_times( 't' ));
+}
+
+

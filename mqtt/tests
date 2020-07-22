@@ -1,0 +1,9 @@
+{ "user":"arc" }
+
+{ "subscribe":[ "#" ] }
+
+{ "publish":"test message", "topics":[ "ptp/test/arc", "sys/arc/test" ] }
+
+{ "publish":"retained\ntest\nmessage", "topics":[ "sys/arc/test_r" ], "retain":true }
+
+{ "cmd":"exit" }

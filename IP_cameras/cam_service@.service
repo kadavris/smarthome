@@ -1,0 +1,14 @@
+[Unit]
+Description=Security cams recording
+After=syslog.target network.target
+
+[Service]
+User=smarthome
+Group=smarthome
+WorkingDirectory=/etc/smarthome/cams
+ExecStart=/etc/smarthome/cams/cam_service.pl -l %i
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

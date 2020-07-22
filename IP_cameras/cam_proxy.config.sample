@@ -1,0 +1,6 @@
+# !!! permissions should be secure !!!
+load_config( 'cam_common.config' );
+load_config( 'cam_rtsp.config' );
+
+$log = 0;
+$debug = 0;

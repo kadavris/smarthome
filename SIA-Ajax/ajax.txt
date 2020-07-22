@@ -1,0 +1,53 @@
+https://community.home-assistant.io/t/ajax-alarm-system/62853/31
+
+class Hub:
+    reactions = {            
+            "Nri1/BA" : [{"state":"ALARM_ZONE1","value":True}],
+            "Nri1/TA" : [{"state":"ALARM_ZONE1" ,"value":True}],
+            "Nri1/CG" : [{"state":"STATUS_ZONE1" ,"value":False},{"state":"STATUS_NIGHT_MODE" ,"value":False}],
+            "Nri1/CL" : [{"state":"STATUS_ZONE1" ,"value":False},{"state":"STATUS_NIGHT_MODE" ,"value":False}],
+            "Nri1/NL" : [{"state":"STATUS_NIGHT_MODE" ,"value":False}],
+            "Nri1/NP" : [{"state":"STATUS_NIGHT_MODE" ,"value":True}],
+            "Nri1/WA":  [{"state":"LEAK_ZONE1","value":True}],
+            "Nri1/WH":  [{"state":"LEAK_ZONE1" ,"value":False}],
+            "Nri1/GA":  [{"state":"GAS_ZONE1","value":True}],
+            "Nri1/GH":  [{"state":"GAS_ZONE1" ,"value":False}],
+            "Nri1/BR" : [{"state":"ALARM_ZONE1","value":False}],
+            "Nri1/OG" : [{"state":"STATUS_ZONE1","value":True},{"state":"STATUS_NIGHT_MODE","value":True}],
+            "Nri1/OP" : [{"state":"STATUS_ZONE1","value":True},{"state":"STATUS_NIGHT_MODE","value":True}],
+            "Nri2/BA" : [{"state":"ALARM_ZONE2","value":True}],
+            "Nri2/TA" : [{"state":"ALARM_ZONE2" ,"value":True}],
+            "Nri2/CG" : [{"state":"STATUS_ZONE2" ,"value":False}],
+            "Nri2/CL" : [{"state":"STATUS_ZONE2" ,"value":False}],
+            "Nri2/WA":  [{"state":"LEAK_ZONE2","value":True}],
+            "Nri2/WH":  [{"state":"LEAK_ZONE2" ,"value":False}],
+            "Nri2/GA":  [{"state":"GAS_ZONE2","value":True}],
+            "Nri2/GH":  [{"state":"GAS_ZONE2" ,"value":False}],
+            "Nri2/BR" : [{"state":"ALARM_ZONE2","value":False}],
+            "Nri2/OG" : [{"state":"STATUS_ZONE2","value":True}],
+            "Nri2/OP" : [{"state":"STATUS_ZONE2","value":True}],
+            "Nri0/RP" : []
+        }
+
+    def __init__(self, hass, hub_config):
+        self._name = hub_config[CONF_NAME]
+        self._accountId = hub_config[CONF_ACCOUNT]
+        self._hass = hass
+        self._states = {}
+        self._states["LEAK_ZONE1"] = SIABinarySensor("sia_leak_zone1_" + self._name,"moisture" , hass)
+        self._states["GAS_ZONE1"] = SIABinarySensor("sia_gas_zone1_" + self._name,"smoke", hass)
+        self._states["ALARM_ZONE1"]  = SIABinarySensor("sia_alarm_zone1_" + self._name,"safety", hass)
+        self._states["STATUS_ZONE1"]  = SIABinarySensor("sia_status_zone1_" + self._name, "lock", hass)
+        self._states["STATUS_NIGHT_MODE"]  = SIABinarySensor("sia_status_night_mode_" + self._name, "lock", hass)
+        self._states["LEAK_ZONE2"] = SIABinarySensor("sia_leak_zone2_" + self._name,"moisture" , hass)
+        self._states["GAS_ZONE2"] = SIABinarySensor("sia_gas_zone2_" + self._name,"smoke", hass)
+        self._states["ALARM_ZONE2"]  = SIABinarySensor("sia_alarm_zone2_" + self._name,"safety", hass)
+        self._states["STATUS_ZONE2"]  = SIABinarySensor("sia_status_zone2_" + self._name, "lock", hass)
+    
+    def manage_string(self, msg):
+        _LOGGER.debug("manage_string: " + msg)
+        
+        pos = msg.find('/')        
+        assert pos>=0, "Can't find '/', message is possibly encrypted"
+        # tipo = msg[pos+1:pos+3]
+        tipo = msg[pos-4:pos+3]

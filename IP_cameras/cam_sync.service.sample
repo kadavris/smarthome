@@ -1,0 +1,14 @@
+[Unit]
+Description=Security cameras events footage cloud-syncer
+After=syslog.target network.target
+
+[Service]
+User=smarthome
+Group=smarthome
+ExecStart=/etc/smarthome/cams/cam_sync.pl
+WorkingDirectory=/etc/smarthome/cams
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
