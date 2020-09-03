@@ -12,7 +12,7 @@ import sys
 
 #############################################################
 def load_config( c_file ):
-	global config
+	global args,config
 
 	file = c_file
 
