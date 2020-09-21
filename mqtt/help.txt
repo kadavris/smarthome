@@ -1,0 +1,46 @@
+options:
+-c - path to non-default config file
+-d - debug mode
+-i - work in stdin mode, accepting multiple commands in json (protocol see below)
+-m - message to send
+-r - retain mode
+-s - subscribe to topic(s). will print incoming messages on stdout in json format. see below
+-t - topic to send to or topic(s) to subscribe
+-u - user name
+
+For stdin mode (-i) the input is in json. Other keys except -c and -d are ignored.
+Check if answer's rc element (return code) is non-zero as an indication of error
+
+Authentication:
+set user name. Overrides .ini:
+	{ "user":"<username>", "password":"<optional password>" }
+
+Special commands:
+	{ "cmd":"<command>" }
+	exit - end session
+
+Publish:
+	{ "publish":"<message>", "topics":[ "<topic1>",... ] }
+	add "retain":true to make topic retained
+	answers:
+		OK: { "message":"published", "rc":0, "id":<message id>, "topic":"<topic>", "payload":"<payload>" }
+
+Subscribe to topic(s):
+	{ "subscribe":[ "<topic1>"... ] }
+	answers:
+		{ "message":"subscribed", "rc":0, "topic":"<topic>" } - OK
+		{ "message":"subscribe failed", "rc":<return code>, "topic":"<topic>" } - some error occurred
+
+		{ "subscription":"<topic>", "message":"message payload>" } - new message arrived
+
+UNsubscribe from topic(s):
+	{ "unsubscribe":[ "<topic1>"... ] }
+	answers:
+		{ "message":"unsubsribed", "rc":0 }
+		{ "message":"unsubsribe failed", "rc":<return code> }
+
+Common answers (mostly problems):
+	{ "message":"untracked message callback detected", rc:<return code>, "id":<message id> }
+		used in async confirmation mode, but it is off now
+	{ "message":"invalid json", "rc":<return code> }
+	{ "message":"unknown command", "rc":<return code> }

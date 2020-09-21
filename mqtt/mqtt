@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Written by Andrej Pakhutin (pakhutin at gmail) as a excercise in python.
+# Written by Andrej Pakhutin (pakhutin at gmail)
 # helper to send/subscribe messages with MQTT
 import argparse
 import configparser
@@ -12,7 +12,7 @@ import sys
 
 #############################################################
 def load_config( c_file ):
-	global args,config
+	global config
 
 	file = c_file
 
@@ -23,6 +23,9 @@ def load_config( c_file ):
 
 		file = os.path.dirname( sys.argv[0] ) + '/' + c_file
 
+		if not os.path.exists( file ):
+			file = '/etc/smarthome/mqtt/' + c_file
+
 	args.debug and print( "+ Loading config: " + file )
 
 	config = configparser.ConfigParser()
@@ -31,7 +34,7 @@ def load_config( c_file ):
 ####################################################
 # The callback for debugging
 def on_log( client, userdata, level, buf ):
-	print ( '+', buf)
+	print ( '+', buf )
 
 ####################################################
 # The callback for when the client receives a CONNACK response from the server.
@@ -43,14 +46,21 @@ def on_connect( client, userdata, flags, rc ):
 ####################################################
 # global simplifier of things
 def connect():
-	global config,client_conn,connected,server
+	global args, config, client_conn, connected, server
 
 	client_conn.on_connect = on_connect
+
+	if connected:
+		client_conn.disconnect()
+		connected = False
 
 	client_conn.connect( server, port = int( config[ server ][ 'port' ] ),
 		keepalive = int( config[ server ][ 'keepalive' ] ) )
 
 	connected = True
+
+	if args.debug:
+		print( "+ Connected" )
 
 	client_conn.loop_start()
 
@@ -63,7 +73,7 @@ def on_message( client, userdata, msg ):
 # The callback for when a PUBLISH has been done
 def on_publish( client, userdata, mid ):
 	if not mid in mids:
-		print( '{ "message":"untracked message callback detected", rc:0, "id":' + str( mid ) + ' }' )
+		print( '{ "message":"untracked message callback detected", rc:1, "id":' + str( mid ) + ' }' )
 		return
 
 	( t, msg ) = mids[ mid ]
@@ -83,7 +93,7 @@ def subscribe( client, topic ):
 
 ####################################################
 def sub_loop():
-	global args,client_conn
+	global args, client_conn
 
 	client_conn.on_message = on_message
 
@@ -91,18 +101,25 @@ def sub_loop():
 		if not subscribe( client_conn, t ):
 			sys.exit(1)
 
-	client_conn.loop_forever( timeout = 1.0, max_packets = 1, retry_first_connection = False )
+	go_stdin()
+	#client_conn.loop_forever( timeout = 1.0, max_packets = 1, retry_first_connection = False )
 
 	sys.exit(1)
 
 ####################################################
 def go_stdin():
-	global args,client_conn,connected,mids
+	global args, client_conn, connected, mids
 	client_conn.on_message = on_message
 #	client_conn.on_publish = on_publish
 
 	while not sys.stdin.closed:
 		l = sys.stdin.readline()
+
+		if len( l ) == 0:
+			continue
+
+		if args.debug:
+			print( "+ got json: '" + l.strip() + "'" )
 
 		try:
 			j = json.loads( l )
@@ -110,15 +127,11 @@ def go_stdin():
 			print( '{ "message":"invalid json", "rc":1 }' )
 			continue
 
-		if args.debug:
-			print( "+ got json: '" + l.strip() + "'" )
-
-		# { "user":"name", "password":"..." }
-		if 'user' in j:
+		if 'user' in j: # { "user":"name", "password":"..." }
 			client_conn.username_pw_set( j['user'], password = j[ 'password' ] if 'password' in j else None )
 			continue
 
-		# { "cmd":"something" }
+
 		if 'cmd' in j: # specials
 			if j['cmd'] == 'exit': # exit/done
 				break
@@ -126,40 +139,39 @@ def go_stdin():
 		if not connected:
 			connect()
 
-		# { "publish":"message", "topics":[], "retain":bool, qos:num }
-		if 'publish' in j:
-			mi = client_conn.publish( t, j['publish'],
-								qos = j[ 'qos' ] if 'qos' in j else 0,
-								retain = 'retain' in j and j['retain'] )
-			mi.wait_for_publish()
-			#mids[ mi.mid ] = ( t, j['publish'] ) # tracker
-			print( '{ "message":"published", "rc":0, "id":' + str( mi.mid ) +
-					', "topic":"' + t + '", "payload":"' + j['publish'].replace( '"', '\"' ) + '" }' )
+		if 'publish' in j: # { "publish":"message", "topics":[], "retain":bool }
+			r = 'retain' in j and j[ 'retain' ]
+			q = j[ 'qos' ] if 'qos' in j else 0
 
-		# { "will":"message", "topic":[], "retain":bool, qos:num }
-		if 'will' in j:
-			for t in j['topics']:
-				mi = client.will_set( t, payload = j[ 'will' ],
-									 qos = j[ 'qos' ] if 'qos' in j else 0,
-									 retain = 'retain' in j and j['retain'] )
+			for t in j[ 'topics' ]:
+				mi = client_conn.publish( t, j[ 'publish' ], qos = q, retain = r )
 				mi.wait_for_publish()
 				#mids[ mi.mid ] = ( t, j['publish'] ) # tracker
-				print( '{ "message":"published", "rc":0, "id":' + str( mi.mid ) +
-					', "topic":"' + t + '", "payload":"' + j[ 'will' ].replace( '"', '\"' ) + '" }' )
 
-		# { "subscribe":[topics] }
-		elif 'subscribe' in j:
-			for t in j['subscribe']:
+				print( '{ "message":"published", "rc":0, "id":' + str( mi.mid ) +
+					', "topic":"' + t + '", "payload":"' + j[ 'publish' ].replace( '"', '\"' ) + '" }' )
+
+		elif 'subscribe' in j: # { "subscribe":[topics] }
+			for t in j[ 'subscribe' ]:
 				subscribe( client_conn, t )
 
-		# { "unsubscribe":[topics] }
-		elif 'unsubscribe' in j:
-			for t in j['unsubscribe']:
+		elif 'unsubscribe' in j: # { "unsubscribe":[topics] }
+			for t in j[ 'unsubscribe' ]:
 				( r, mid ) = client_conn.unsubscribe( t )
 				if r == mqtt.MQTT_ERR_SUCCESS:
 					print( '{ "message":"unsubsribed", "rc":' + str( r ) + ' }' )
 				else:
 					print( '{ "message":"unsubsribe failed", "rc":' + str( r ) + ' }' )
+
+		elif 'will' in j: # { "will":"message", "topic":[], "retain":bool, qos:num }
+			r = 'retain' in j and j['retain']
+			q = j[ 'qos' ] if 'qos' in j else 0
+
+			for t in j['topics']:
+				mi = client.will_set( t, payload = j[ 'will' ], qos = q, retain = r )
+
+				print( '{ "message":"will set", "rc":0, "id":' + str( mi.mid ) +
+					', "topic":"' + t + '", "payload":"' + j[ 'will' ].replace( '"', '\"' ) + '" }' )
 
 		else:
 			print( '{ "message":"unknown command", "rc":1 }' )
@@ -173,32 +185,32 @@ def go_stdin():
 ####################################################
 global args, config, connected, client_conn, mids, server
 
+config_path = '/etc/smarthome/mqtt/mqtt.ini' # default
 connected = False # for handling stuff in stdin mode
 mids = dict() # to track messages in stdin mode
 
 ####################################################
 
-parser = argparse.ArgumentParser( description='Send or subscribe to mqtt messages' )
+parser = argparse.ArgumentParser( description = 'Send or subscribe to mqtt messages' )
 
-parser.add_argument( '-c', dest='config_path', action='store', default='mqtt.ini', help='path to config file')
-parser.add_argument( '-d', dest='debug', action='store_true', default=False,  help='debug mode')
-parser.add_argument( '-i', dest='stdin_mode', action='store_true', default=False, help='work in stdin mode, accepting multiple commands in json' )
-parser.add_argument( '-m', dest='message', action='store', help='message to send' )
-parser.add_argument( '-q', dest='qos', action='store', help='Quality of service code (0-2)' )
-parser.add_argument( '-r', dest='retain', action='store_true', default=False, help='retain mode' )
-parser.add_argument( '-s', dest='subscribe', action='store_true', default=False, help='subscribe to topic(s)' )
-parser.add_argument( '-t', dest='topics', action='append', help='topic to send to or topic(s) to subscribe' )
-parser.add_argument( '-u', dest='username', action='store', default='', help='user name' )
-parser.add_argument( 'server', nargs='?', default='', help='server name, if not default one' )
+parser.add_argument( '-c', dest = 'config_path', action = 'store', default = config_path, help = 'path to non-default (' + config_path + ') config file')
+parser.add_argument( '-d', dest = 'debug', action = 'store_true', default = False,  help = 'debug mode')
+parser.add_argument( '-i', dest = 'stdin_mode', action = 'store_true', default = False, help = 'work in stdin mode, accepting multiple commands in json' )
+parser.add_argument( '-m', dest = 'message', action = 'store', help = 'message to send' )
+parser.add_argument( '-r', dest = 'retain', action = 'store_true', default = False, help = 'retain mode' )
+parser.add_argument( '-s', dest = 'subscribe', action = 'store_true', default = False, help = 'subscribe to topic(s)' )
+parser.add_argument( '-t', dest = 'topics', action = 'append', help = 'topic to send to or topic(s) to subscribe' )
+parser.add_argument( '-u', dest = 'username', action = 'store', default = '', help = 'user name' )
+parser.add_argument( '-p', dest = 'password', action = 'store', default = None, help = 'password (if you willing to show it in processes)' )
+parser.add_argument( 'server', nargs = '?', default = '', help = 'server name, if not default one' )
 
 args = parser.parse_args()
 
 load_config( args.config_path );
 
 client_conn = mqtt.Client()
-
 if args.debug:
-	client_conn.on_log=on_log
+	client_conn.on_log = on_log
 	client_conn.enable_logger()
 
 server = args.server
@@ -206,29 +218,30 @@ if server == '': #get default
 	server = config[ 'DEFAULT' ][ 'server' ]
 
 if not server in config:
-	print( "Server", server, " not in .ini file" )
+	print( "Server", server, " not in", config_path )
 	sys.exit(1)
 
 if args.debug:
 	print( "Server", server )
 
 if args.username != '': # use to switch ACLs
-	client_conn.username_pw_set( args.username )
-
-elif config[ server ][ 'auth' ] == 'user':
-	if not 'user' in config[ server ] or not 'pass' in config[ server ]:
-		print( "! no user/password set !" )
-		sys.exit(1)
-
+	client_conn.username_pw_set( args.username, password = args.password )
+elif 'auth' in config[ server ] and config[ server ] == 'user':
 	client_conn.username_pw_set( config[ server ][ 'user' ], password = config[ server ][ 'pass' ] )
 
-#--------------------------------------------
-if config[ server ][ 'auth' ] == 'ssl':
+if args.debug:
+	for s in config:
+		print( 'section "' + s + '"')
+		for i in config[s]:
+			print( '     "' + i + '" = "' + config[s][i] + '"')
+
+if 'auth' in config and config[ 'auth' ] == 'ssl':
 	if args.debug:
 		print( "+ SSL mode" )
 
+	# setting some defaults:
 	if not 'port' in config[ server ]:
-		config[ server ][ 'port' ] = '1883'
+		config[ server ][ 'port' ] = '8883'
 
 	#context = ssl.create_default_context()
 	#context.verify_mode = ssl.CERT_REQUIRED
@@ -236,14 +249,17 @@ if config[ server ][ 'auth' ] == 'ssl':
 	#context.load_default_certs()
 	#client_conn.tls_set_context( context )
 
-	client_conn.tls_set( ca_certs = None,
+	client_conn.tls_set(
+		ca_certs = config[ server ][ 'cafile' ],
 		certfile = config[ server ][ 'crt' ],
 		keyfile  = config[ server ][ 'key' ],
-		cert_reqs = ssl.CERT_REQUIRED, tls_version = ssl.PROTOCOL_TLS, ciphers = None
-		#SSL_ca_path   => config[ server ][ 'capath' ] # use system default
-		#SSL_ca_file   => config[ server ][ 'cafile' ]
+		cert_reqs = ssl.CERT_REQUIRED,
+		tls_version = ssl.PROTOCOL_TLS,
+		ciphers = None
+		#SSL_ca_path   => config[ sever ][ 'capath' ]
 	)
-else:
+else: # not SSL. note that user/pass already set when we checked for command line override
+	# setting some defaults:
 	if not 'port' in config[ server ]:
 		config[ server ][ 'port' ] = '1883'
 
@@ -257,6 +273,7 @@ if args.stdin_mode:
 #--------------------------------------------
 if args.topics == None:
 	print( "Topic(s) are undefined!" )
+	parser.print_help()
 	sys.exit(1)
 
 connect()
@@ -268,11 +285,15 @@ if args.subscribe:
 #--------------------------------------------
 if args.message == None:
 	print( "Message is undefined!" )
+	parser.print_help()
 	sys.exit(1);
 
 for t in args.topics:
-	client_conn.publish( t, args.message, retain = args.retain ).wait_for_publish()
-	if args.debug:
-		print( "published to " + t + " - " + args.message )
+	try:
+		client_conn.publish( t, args.message, retain = args.retain ).wait_for_publish()
+		if args.debug:
+			print( "published to " + t + " - " + args.message )
+	except:
+		break
 
 client_conn.disconnect()
