@@ -257,16 +257,42 @@ sub flush_log
 # in: code, messsage
 sub save_status
 {
-  return if ! defined( $o{ 'state file tpl' } );
-  
-  my $file = $o{ 'state file tpl' };
-  $file =~ s/%cam%/$cam_id/g;
-
-  if ( open( my $st, '>', $file ) )
+  if ( defined( $o{ 'state file tpl' } ) )
   {
-    print $st $_[1], "\n";
-    print $st $_[0], "\n";
-    close $st;
+    my $file = $o{ 'state file tpl' };
+    $file =~ s/%cam%/$cam_id/g;
+
+    if ( open( my $st, '>', $file ) )
+    {
+      print $st $_[1], "\n";
+      print $st $_[0], "\n";
+      close $st;
+    }
+  }
+
+  if ( defined( $o{ 'mqtt' } ) )
+  {
+    my $cmd = $o{ 'mqtt' };
+    my $msg = qq~{ "code":$_[0], "message":"$_[1]", "date":"~ . localtime(time) . qq~", "timestamp":~ . time() . ' }';
+
+    if ( $cmd =~ /%(topic|message)%/ ) # command line mode
+    {
+      $cmd =~ s/%topic%/"$o{'mqtt topic status'}"/;
+      $cmd =~ s/%camid%/$cam_id/g;
+      $msg =~ s/'/\\'/g;
+      $cmd =~ s/%message%/'$msg'/;
+      system $cmd;
+    }
+    else
+    {
+      $msg =~ s/"/\\"/g;
+      $msg = qq~{ "publish":"$msg", "retain":true, "topics":[ "~ . $o{'mqtt topic status'} . qq~" ] }~;
+      $msg =~ s/%camid%/$cam_id/g;
+
+      open( MTOOL, '|-', $cmd ) or return;
+      print MTOOL qq~$msg\n{ "cmd":"exit" }\n~;
+      close MTOOL;
+    }
   }
 }
 

@@ -87,7 +87,7 @@ for ( ; $paddr = accept( Client, Server ); close Client )
     $rawmsg = '';
     $rawmsglen = sysread( Client, $rawmsg, 999 );
 
-    next if ( ! defined( $rawmsg ) || $rawmsglen == 0 );
+    next if ( ! defined( $rawmsg ) || ! $rawmsglen );
 
     $debug and dolog( '+ read ', $rawmsglen, ' bytes, ', time - $conn_start, ' seconds passed' );
 

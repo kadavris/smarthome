@@ -44,6 +44,11 @@ $o{ 'limit min size' }   =  1 * 1024 * 1024 * 1024; # Bytes. If _filesystem_ is 
 $o{ 'fs min free' }      = 10 * 1024 * 1024 * 1024; # Bytes. Minimum free space on filesystem to maintain. See $o{ 'limit min size' }
 
 $o{ 'state file tpl' } = $o{ 'base dir' } . '/state_%cam%'; # file to report a state of recording. nagios-ready scheme: 1st line is message, 2nd line is status code
+# MQTT stuff
+# path to the mqtt tool + args. unset to disable reports via mqtt. quotes will be added automatically
+#$o{ 'mqtt' } = '/etc/smarthome/mqtt/mqtt --topic %topic% --message %message% --retain';
+$o{ 'mqtt' } = '/etc/smarthome/mqtt/mqtt --stdin';
+$o{ 'mqtt topic status' } = 'hw/cameras/%camid%'; # %camid% will be replaced by camera id
 
 ####################################################
 # this stuff goes here to prevent copy-paste

@@ -327,15 +327,15 @@ sub touch_file
 # in: none, out: none
 sub mqtt_run
 {
-  #$mqtt = Net::MQTT::Simple::SSL->new( $o{ 'mqtt server' },
+  #$mqtt = Net::MQTT::Simple::SSL->new( $o{ 'mqtt event server' },
   #  {
-  #    SSL_ca_path   => $o{ 'mqtt ssl ca' },
-  #    SSL_cert_file => $o{ 'mqtt ssl crt' },
-  #    SSL_key_file  => $o{ 'mqtt ssl key' },
+  #    SSL_ca_path   => $o{ 'mqtt event ssl ca' },
+  #    SSL_cert_file => $o{ 'mqtt event ssl crt' },
+  #    SSL_key_file  => $o{ 'mqtt event ssl key' },
   #  } );
-  $mqtt = Net::MQTT::Simple->new( $o{ 'mqtt server' } );
+  $mqtt = Net::MQTT::Simple->new( $o{ 'mqtt event server' } );
 
-  $mqtt or die 'MQTT to ' . $o{ 'mqtt server' } . ' failed: ' . $@;
+  $mqtt or die 'MQTT to ' . $o{ 'mqtt event server' } . ' failed: ' . $@;
 
   #$mqtt->publish( "topic/here" => "Message here" );
   #$mqtt->retain( "topic/here" => "Message here" );
@@ -343,7 +343,7 @@ sub mqtt_run
   $debug and print "+ MQTT: run()\n";
 
   $mqtt->run(
-      $o{ 'mqtt topic' } => \&mqtt_got_message,
+      $o{ 'mqtt event topic' } => \&mqtt_got_message,
       '#' => \&mqtt_misc
   );
 
@@ -397,7 +397,7 @@ sub mqtt_got_message
       $mqtt_pers_timeouts{ $event } = {};
     }
 
-    $mqtt_pers_timeouts{ $event }->{ 't/o' } = time + $o{ 'mqtt persistent timeout' };
+    $mqtt_pers_timeouts{ $event }->{ 't/o' } = time + $o{ 'mqtt event persistent timeout' };
     $mqtt_pers_timeouts{ $event }->{ 'msg' } = join( ',', ( $event, 'off', @cam_list ) );
   } # pers on
 
