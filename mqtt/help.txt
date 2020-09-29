@@ -1,19 +1,13 @@
-options:
--c - path to non-default config file
--d - debug mode
--i - work in stdin mode, accepting multiple commands in json (protocol see below)
--m - message to send
--r - retain mode
--s - subscribe to topic(s). will print incoming messages on stdout in json format. see below
--t - topic to send to or topic(s) to subscribe
--u - user name
+For the list of options use --help
 
-For stdin mode (-i) the input is in json. Other keys except -c and -d are ignored.
-Check if answer's rc element (return code) is non-zero as an indication of error
+For stdin mode (-i | --stdin) the input is in json. Other keys except -c and -d are ignored.
+Check if answer's rc element (return code) is non-zero as an indication of error.
+NOTE: json commands SHOULD be one-liner.
+If you want to send the message with line breaks use "mpublish" command (see below)
 
 Authentication:
 set user name. Overrides .ini:
-	{ "user":"<username>", "password":"<optional password>" }
+	{ "user":"<username>", "password":"optional" }
 
 Special commands:
 	{ "cmd":"<command>" }
@@ -21,7 +15,12 @@ Special commands:
 
 Publish:
 	{ "publish":"<message>", "topics":[ "<topic1>",... ] }
-	add "retain":true to make topic retained
+	add optional "retain":true to make topic retained
+	"qos":qos - optional qos type
+	{ "mpublish":"stop tag" ...the rest is the same as for "publish" } - for multiline messages: the string is a stop-word.
+		You post you message beginning after the json command line.
+		The message stops when "stop tag" encountered within the line.
+		It is recommennded to use random UUID to ensure that this will be unique.
 	answers:
 		OK: { "message":"published", "rc":0, "id":<message id>, "topic":"<topic>", "payload":"<payload>" }
 

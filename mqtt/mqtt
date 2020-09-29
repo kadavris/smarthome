@@ -12,8 +12,37 @@ import sys
 import time
 
 #############################################################
+# do 'base=' inheritance
+def config_rebase( section_name ):
+	global c_r_stack
+
+	if section_name in c_r_stack:
+		print( '! ERROR: base= loop detected in .ini with', section_name )
+		sys.exit( 1 )
+
+	if not 'base' in config[ section_name ]:
+		return
+
+	base_name = config[ section_name ][ 'base' ]
+
+	# rebase the base ;)
+	c_r_stack.append( section_name )
+	config_rebase( base_name )
+	c_r_stack.pop()
+
+	# now copy all missing keys from base
+	if args.debug:
+		print( 'rebasing', section_name, 'from', base_name )
+
+	for k in config[ base_name ]:
+		if not k in config[ section_name ]:
+			config[ section_name ][ k ] = config[ base_name ][ k ].replace( '%', '%%' )
+			if args.debug:
+				print( '\trebased key ', k, '=', config[ section_name ][ k ] )
+
+#############################################################
 def load_config( c_file ):
-	global config
+	global config, c_r_stack
 
 	file = c_file
 
@@ -31,6 +60,10 @@ def load_config( c_file ):
 
 	config = configparser.ConfigParser()
 	config.read( file )
+
+	c_r_stack = []
+	for sec in config.sections():
+		config_rebase( sec )
 
 ####################################################
 # The callback for debugging
@@ -55,7 +88,7 @@ def connect():
 		client_conn.disconnect()
 		connected = False
 
-	client_conn.connect( server, port = int( config[ server ][ 'port' ] ),
+	client_conn.connect( config[ server ][ 'server' ], port = int( config[ server ][ 'port' ] ),
 		keepalive = int( config[ server ][ 'keepalive' ] ) )
 
 	connected = True
@@ -82,8 +115,10 @@ def on_publish( client, userdata, mid ):
 
 	( t, msg ) = mids[ mid ]
 	del mids[ mid ]
-	print( '{ "message":"published", "rc":0, "id":' + str( mid ) +
-		', "topic":"' + t + '", "payload":"' + msg.replace( '"', '\"' ) + '" }' )
+
+	if not args.quiet:
+		print( '{ "message":"published", "rc":0, "id":' + str( mid ) +
+			', "topic":"' + t + '", "payload":"' + msg.replace( '"', '\"' ) + '" }' )
 
 ####################################################
 def subscribe( client, topic ):
@@ -92,7 +127,7 @@ def subscribe( client, topic ):
 		print( '{ "message":"subscribe failed", "rc":' + str( r ) + ', "topic":"' + topic + '" }' )
 		return False
 
-	if not args.oneshot: # make output simpler for one-time checks
+	if not args.oneshot and not args.quiet: # make output simpler for one-time checks
 		print( '{ "message":"subscribed", "rc":' + str( r ) + ', "topic":"' + topic + '" }' )
 
 	return True
@@ -131,14 +166,14 @@ def go_stdin():
 		if len( l ) == 0:
 			continue
 
-		if args.debug:
-			print( "+ got json: '" + l.strip() + "'" )
-
 		try:
 			j = json.loads( l )
 		except:
 			print( '{ "message":"invalid json", "rc":1 }' )
 			continue
+
+		if args.debug:
+			print( "+ json parsed OK" )
 
 		if 'user' in j: # { "user":"name", "password":"..." }
 			client_conn.username_pw_set( j['user'], password = j[ 'password' ] if 'password' in j else None )
@@ -152,17 +187,35 @@ def go_stdin():
 		if not connected:
 			connect()
 
-		if 'publish' in j: # { "publish":"message", "topics":[], "retain":bool }
+		if 'publish' in j or 'mpublish' in j: # { "[m]publish":"message", "topics":[], "retain":bool }
 			r = 'retain' in j and j[ 'retain' ]
 			q = j[ 'qos' ] if 'qos' in j else 0
 
+			msg = ''
+			mode = ''
+			if 'publish' in j:
+				msg = j[ 'publish' ]
+				mode = 'publish'
+			else:
+				mode = 'mpublish'
+				# now read the actual message for mpublish
+				while True:
+					l = sys.stdin.readline()
+					p = l.find( j[ 'mpublish' ] )
+					if p >= 0:
+						msg += l[ 0:p ]
+						break
+
+					msg += l
+
 			for t in j[ 'topics' ]:
-				mi = client_conn.publish( t, j[ 'publish' ], qos = q, retain = r )
+				mi = client_conn.publish( t, msg, qos = q, retain = r )
 				mi.wait_for_publish()
 				#mids[ mi.mid ] = ( t, j['publish'] ) # tracker
 
-				print( '{ "message":"published", "rc":0, "id":' + str( mi.mid ) +
-					', "topic":"' + t + '", "payload":"' + j[ 'publish' ].replace( '"', '\"' ) + '" }' )
+				if not args.quiet:
+					print( '{ "message":"published", "rc":0, "id":' + str( mi.mid ) +
+						', "topic":"' + t + '", "payload":"' + j[ mode ].replace( '"', '\"' ) + '" }' )
 
 		elif 'subscribe' in j: # { "subscribe":[topics] }
 			for t in j[ 'subscribe' ]:
@@ -172,7 +225,8 @@ def go_stdin():
 			for t in j[ 'unsubscribe' ]:
 				( r, mid ) = client_conn.unsubscribe( t )
 				if r == mqtt.MQTT_ERR_SUCCESS:
-					print( '{ "message":"unsubsribed", "rc":' + str( r ) + ' }' )
+					if not args.quiet:
+						print( '{ "message":"unsubsribed", "rc":' + str( r ) + ' }' )
 				else:
 					print( '{ "message":"unsubsribe failed", "rc":' + str( r ) + ' }' )
 
@@ -183,16 +237,18 @@ def go_stdin():
 			for t in j['topics']:
 				mi = client.will_set( t, payload = j[ 'will' ], qos = q, retain = r )
 
-				print( '{ "message":"will set", "rc":0, "id":' + str( mi.mid ) +
-					', "topic":"' + t + '", "payload":"' + j[ 'will' ].replace( '"', '\"' ) + '" }' )
+				if not args.quiet:
+					print( '{ "message":"will set", "rc":0, "id":' + str( mi.mid ) +
+						', "topic":"' + t + '", "payload":"' + j[ 'will' ].replace( '"', '\"' ) + '" }' )
 
 		else:
 			print( '{ "message":"unknown command", "rc":1 }' )
 
 	client_conn.loop_stop()
+
 	client_conn.disconnect()
 
-	sys.exit(1)
+	sys.exit( 0 )
 
 ####################################################
 ####################################################
@@ -215,10 +271,11 @@ parser.add_argument( '-m', '--message', dest = 'message', action = 'store', help
 parser.add_argument( '--oneshot', dest = 'oneshot', action = 'store_true', default = False, help = 'Use with -s (subscribe) to get the first message only' )
 parser.add_argument( '-r', '--retain', dest = 'retain', action = 'store_true', default = False, help = 'retain mode' )
 parser.add_argument( '-s', '--subscribe', dest = 'subscribe', action = 'store_true', default = False, help = 'subscribe to topic(s)' )
-parser.add_argument( '-t', '--topic', dest = 'topics', action = 'append', help = 'topic to send to or topic(s) to subscribe' )
+parser.add_argument( '-t', '--topic', dest = 'topics', action = 'append', help = 'topic to send to or topic(s) to subscribe (may be repeated)' )
 parser.add_argument( '-u', '--user', dest = 'username', action = 'store', default = '', help = 'user name' )
 parser.add_argument( '-p', '--password', dest = 'password', action = 'store', default = None, help = 'password (if you willing to show it in processes)' )
 parser.add_argument( '-q', '--qos', dest = 'qos', action = 'store', type = int, default = 0, help = 'QoS code (0,1,2)' )
+parser.add_argument( '--quiet', dest = 'quiet', action = 'store_true', default = False, help = 'do not print operations acknowledge messages' )
 parser.add_argument( 'server', nargs = '?', default = '', help = 'server name, if not from DEFAULT .ini section' )
 
 args = parser.parse_args()
@@ -230,8 +287,8 @@ if server == '': #get default
 	server = config[ 'DEFAULT' ][ 'server' ]
 
 if not server in config:
-	print( "Server", server, " not in", config_path )
-	sys.exit(1)
+	print( "! Server", server, " not in", config_path )
+	sys.exit( 1 )
 
 if args.debug:
 	print( "Server", server )
@@ -247,6 +304,8 @@ if args.client_id != '':
 	cid = args.client_id
 elif 'clientid' in config[ server ]:
 	cid = config[ server ][ 'clientid' ]
+else:
+	cid = 'mqtt-tool'
 
 client_conn = mqtt.Client( cid )
 if args.debug:
@@ -316,7 +375,7 @@ if args.subscribe:
 
 #--------------------------------------------
 if args.message == None:
-	print( "Message is undefined!" )
+	print( "! Message is not provided!" )
 	parser.print_help()
 	sys.exit(1);
 

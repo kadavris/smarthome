@@ -1,0 +1,42 @@
+[DEFAULT]
+sender = /etc/smarthome/mqtt/mqtt --stdin --quiet storage-reports
+;sender = /usr/bin/cat
+
+[storage]
+; section for storage status reporter.
+check_ide_smart = /usr/lib64/nagios/plugins/check_ide_smart
+smartctl = /usr/sbin/smartctl -a
+
+; root for all topics.
+root_topic = sys/<HOST>/hw/storage
+
+; device's root topic. $device will be substituted by the device name w/o /dev/
+device_topic = sys/<HOST>/hw/storage/$device
+
+; the dollowing are paths relative to device_topic:
+; nagios-like status, e.g. from check_ide_smart for /dev/sdX
+
+state_topic = state
+
+temperature_topic = temperature
+
+; here we post json like: { "date":"Mon Sep 28 12:45:55 2020", "timestamp":1601286355 }
+updated_topic = updated
+
+#------------------------------
+# my standard topics structure for system(host):
+#sys... - systems root: PCs, servers, etc...
+#  <hostname>... - host info. this topic may have description message or just uname -a
+#     hw... - main hardware
+#       storage...
+#         <device>... json here: {
+#             model
+#             mount - mount point
+#             smart...
+#             subdevs
+#             type
+#           }
+#           state - (ok,warn,crit,unknown)
+#           temperature
+#           updated
+

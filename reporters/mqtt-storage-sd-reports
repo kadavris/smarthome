@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+# This script produces reports on storage health and push it into mqtt.
+# repo is in github.com/kadavris
+import argparse
+import configparser
+import os
+import os.path
+import re
+import sys
+import shlex, subprocess
+import time
+
+#############################################################
+# do 'base=' inheritance
+def config_rebase( section_name ):
+	global args, c_r_stack
+
+	if section_name in c_r_stack:
+		print( '! ERROR: base= loop detected in .ini with', section_name )
+		sys.exit( 1 )
+
+	if not 'base' in config[ section_name ]:
+		return
+
+	base_name = config[ section_name ][ 'base' ]
+
+	# rebase the base ;)
+	c_r_stack.append( section_name )
+	config_rebase( base_name )
+	c_r_stack.pop()
+
+	# now copy all missing keys from base
+	for k in config[ base_name ]:
+		if not k in config[ section_name ]:
+			config[ section_name ][ k ] = config[ base_name ][ k ].replace( '%', '%%' )
+
+#############################################################
+def load_config( c_file ):
+	global args, config, c_r_stack
+
+	file = c_file
+
+	if not os.path.exists( file ):
+		if re.search( r'/', file ):
+			print( "Can't open config: " + file )
+			sys.exit(1)
+
+		file = os.path.dirname( sys.argv[0] ) + '/' + c_file
+
+		if not os.path.exists( file ):
+			file = '/etc/smarthome/reporters/' + c_file
+
+	args.debug and print( "+ Loading config: " + file )
+
+	config = configparser.ConfigParser()
+	config.read( file )
+
+	c_r_stack = []
+	for sec in config.sections():
+		config_rebase( sec )
+
+########################################
+def get_mounts():
+	global args, config, sender
+
+	mf = open( '/proc/mounts', 'r' )
+
+	while True:
+		l = mf.readline()
+		if len( l ) == 0:
+			break
+		rm = re.match( r'^(\S+)\s+(\S+)\s+(\S+)\s+(.+)', l ) # /dev/X mount_point fs_type options
+		mounts[ rm.group( 2 ) ] = { 'disk': rm.group( 1 ), 'fstype': rm.group( 3 ), 'options': rm.group( 4 ) }
+
+	mf.close()
+
+########################################
+# collects data from smartctl. return hash: { model:model+s/n, smart:attributes json, temperature }
+def do_smartctl( device ):
+	global args, config
+
+	ret = { "model": "UNKNOWN", "smart": '', "temperature": "UNKNOWN" }
+	attrs = []
+
+	params = shlex.split( config[ 'storage' ][ 'smartctl' ] )
+	params.append( '/dev/' + device )
+	sctl = subprocess.Popen( params, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True )
+	
+	while True:
+		if sctl.poll():
+			if sctl.returncode > 0:
+				print( 'smartctl ended, rc: ', sctl.returncode )
+			break
+
+		out, err = sctl.communicate()
+		if err != '':
+			print( 'smartctl error: ', err )
+			break
+		
+		for l in out.splitlines():
+			# attributes array
+			rm = re.match( r'\s{0,2}(\d+)\s+(\S+)(\s+\S+){7}\s+(.+)', l )
+			if rm:
+				id = rm.group( 1 )
+				name = re.sub( '_+', ' ', rm.group( 2 ) )
+				data = re.sub( '"', r'\\"', rm.group( 4 ) )
+
+				attrs.append( '"' + id + '":{ "name":"' + name + '", "data":"' + data + '" }' )
+
+				if id == '194':
+					ret[ 'temperature' ] = re.sub( r'\D.+', '', data )
+
+				# other alerts. possibly for later:
+				#  5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       0
+				#  9 Power_On_Hours          0x0032   088   088   000    Old_age   Always       -       11352
+				#187 Reported_Uncorrect      0x0032   100   100   000    Old_age   Always       -       0
+				#197 Current_Pending_Sector  0x0012   100   100   000    Old_age   Always       -       0
+				#198 Offline_Uncorrectable   0x0010   100   100   000    Old_age   Offline      -       0
+				#199 UDMA_CRC_Error_Count    0x003e   200   200   000    Old_age   Always       -       0
+				#241 Total_LBAs_Written      0x0000   100   253   000    Old_age   Offline      -       28754942980
+				#242 Total_LBAs_Read         0x0000   100   253   000    Old_age   Offline      -       18442954018
+
+			# header:
+			rm = re.match( r'Device Model:\s+(.+)', l )
+			if rm:
+				ret[ 'model' ] = "Model: " + rm.group( 1 )
+
+			rm = re.match( r'Serial Number:\s+(.+)', l )
+			if rm:
+				ret[ 'model' ] += ", S/N: " + rm.group( 1 )
+		break
+
+	sctl.terminate()
+
+	ret[ 'smart' ] = '{ ' + ",\n".join( attrs ) + ' }'
+
+	return ret
+
+########################################
+# This function will check /dev/sd?
+def check_storage_sd():
+	global args, config, sender
+
+	for device in os.listdir( '/dev' ):
+		if not re.match( 'sd[a-z]$', device ):
+			continue
+
+		if args.debug:
+			print( 'device:', device )
+
+		# check if it is ata one:
+		rm = re.search( r'/devices/pci[^/]+/[^/]+/ata\d+', os.readlink( "/sys/class/block/" + device ) )
+		if not rm:
+			if args.debug:
+				print( '\t- not ata' )
+			continue
+
+		cf = config[ 'storage' ]
+		topic = cf[ 'device_topic' ].replace( '$device', device )
+
+		# doing check_ide_smart run
+		params = shlex.split( cf[ 'check_ide_smart' ] )
+		params.append( '/dev/' + device )
+		cis = subprocess.Popen( params, stdout = subprocess.PIPE, stderr = subprocess.DEVNULL, text = True )
+
+		msg, e = cis.communicate() # communicate will slurp output and close pipe
+		msg = re.sub( '^OK .*', 'OK', msg.rstrip() ) # strip out clutter
+
+		sender.stdin.write( '{ "publish":"' + msg + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'state_topic' ] + '" ] }\n' )
+
+		sctl = do_smartctl( device )
+
+		msg = '{ "model":"' + sctl[ 'model' ] + '", "smart":"' + sctl[ 'smart' ] + '" }'
+		# we'll use mpublish, so no quoting needed
+		stop = '25@5h256h256H'
+		sender.stdin.write( '{ "mpublish":"' + stop + '", "retain":true, "topics":[ "' + topic + '" ] }\n' + msg + stop + '\n' )
+		sender.stdin.write( '{ "publish":"' + sctl[ 'temperature' ] + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'temperature_topic' ] + '" ] }\n' )
+
+		sender.stdin.write( '{ "publish":"' + dates_json + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'updated_topic' ] + '" ] }\n' )
+
+########################################
+def check_storage():
+	check_storage_sd() # do low-level first
+
+####################################################
+global args, config, dates_json, root_topic, sender
+
+config_path = '/etc/smarthome/reporters/reporters.ini' # default
+
+####################################################
+
+parser = argparse.ArgumentParser( description = 'Collect state info from /dev/sdX and other storage and post it to mqtt' )
+parser.add_argument( '-c', '--config', dest = 'config_path', action = 'store', default = config_path, help = 'path to non-default (' + config_path + ') config file')
+parser.add_argument( '-d', '--debug', dest = 'debug', action = 'store_true', default = False, help = 'debug mode')
+parser.add_argument( '-l', '--loop', dest = 'loop', action = 'store', type = int, default = 0, help = 'Loop forever, sleeping <int> seconds between passes' )
+parser.add_argument( 'action', nargs = '?', default = '', help = 'non-default action name to run' )
+
+args = parser.parse_args()
+
+load_config( args.config_path )
+
+hostname = os.uname().nodename
+
+sender = subprocess.Popen( shlex.split( config[ 'storage' ][ 'sender' ] ),
+		stdin = subprocess.PIPE, stdout = None if args.debug else subprocess.DEVNULL,
+		stderr = None if args.debug else subprocess.DEVNULL, text = True )
+
+if args.debug:
+	print( 'sender:', sender.args )
+
+dates_json = ''
+queue = []
+mounts = dict()
+
+if args.action != '':
+	queue.append( args.action )
+else:
+	queue = [ check_storage ]
+
+while True:
+	dates_json = '{ "date":"' + time.ctime() + '", "timestamp":' + str( int( time.time() ) ) + ' }'
+	dates_json = dates_json.replace( r'"', r'\"')
+
+	for func in queue:
+		func()
+
+	if args.loop == 0:
+		break
+
+	time.sleep( args.loop )
+
+sender.communicate( input = '{ "cmd":"exit" }\n' )
+
+try:
+	sender.wait( timeout = 5.0 )
+except:
+	pass
