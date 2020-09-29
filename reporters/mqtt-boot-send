@@ -15,4 +15,6 @@ prefix="sys/$host"
   echo '{ "publish":"'$msg'", "retain":true, "topics":[ "'$prefix/type'" ] }'
 
   sleep 5 # give it some more time to process
+  echo '{ "cmd":"exit" }'
+  sleep 5 # give it some more time to process
 } | $sender
