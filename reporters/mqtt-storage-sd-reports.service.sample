@@ -6,7 +6,7 @@ After=syslog.target network.target
 # smartctl will not work if not root
 User=root
 Group=smarthome
-ExecStart=/etc/smarthome/reporters/mqtt-storage-sd-reports
+ExecStart=/etc/smarthome/reporters/mqtt-storage-sd-reports --loop 60
 WorkingDirectory=/etc/smarthome/reporters
 Restart=on-failure
 RestartSec=5

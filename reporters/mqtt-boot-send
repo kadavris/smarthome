@@ -17,4 +17,6 @@ prefix="sys/$host"
   sleep 5 # give it some more time to process
   echo '{ "cmd":"exit" }'
   sleep 5 # give it some more time to process
+
+  exit 0
 } | $sender

@@ -6,7 +6,7 @@ key    = /etc/smarthome/mqtt/ssl/thishost.key.pem
 auth   = ssl # 'user' or 'ssl'
 server = your.home.mqtt.domain # section name == address
 keepalive = 15
-clientid = someid
+clientid = someid.keep.it.unique.or.your.clients.will.fight.each.other
 
 [your.home.mqtt.domain]
 auth = user
@@ -16,3 +16,10 @@ pass = <password>
 [your.cloud.com]
 auth   = ssl
 keepalive = 60
+
+[another.one]
+auth = user
+user = ${your.home.mqtt.domain:user}
+pass = ${your.home.mqtt.domain:pass}
+clientid = other.instance
+

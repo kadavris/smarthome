@@ -1,7 +1,17 @@
+; NOTE: program uses extended interpolation, so mask your '$' character with double '$$'
 [DEFAULT]
-sender = /etc/smarthome/mqtt/mqtt --stdin --quiet storage-reports
+;sender = /etc/smarthome/mqtt/mqtt --stdin --quiet storage-reports
+sender = /etc/smarthome/mqtt/mqtt --stdin storage-reports
 ;sender = /usr/bin/cat
 
+; here we post json like: { "date":"Mon Sep 28 12:45:55 2020", "timestamp":1601286355 }
+updated_topic = updated
+
+; the following are paths relative to device_topic:
+; nagios-like status, e.g. from check_ide_smart for /dev/sdX
+state_topic = state
+
+;====================================
 [storage]
 ; section for storage status reporter.
 check_ide_smart = /usr/lib64/nagios/plugins/check_ide_smart
@@ -10,33 +20,51 @@ smartctl = /usr/sbin/smartctl -a
 ; root for all topics.
 root_topic = sys/<HOST>/hw/storage
 
-; device's root topic. $device will be substituted by the device name w/o /dev/
-device_topic = sys/<HOST>/hw/storage/$device
-
-; the dollowing are paths relative to device_topic:
-; nagios-like status, e.g. from check_ide_smart for /dev/sdX
-
-state_topic = state
+; device's root topic. $$device will be substituted by the device name w/o /dev/
+device_topic = ${root_topic}/$$device
 
 temperature_topic = temperature
 
-; here we post json like: { "date":"Mon Sep 28 12:45:55 2020", "timestamp":1601286355 }
-updated_topic = updated
+;====================================
+[power]
+sender = /usr/bin/cat
+;power
+;     <dev_id>
+;         ctl...
+;         batt_charge
+;         in_volts
+;         out_load
+;         state
+;         type
+;         updated
+; root for all topics.
+root_topic = hw/power
 
-#------------------------------
-# my standard topics structure for system(host):
-#sys... - systems root: PCs, servers, etc...
-#  <hostname>... - host info. this topic may have description message or just uname -a
-#     hw... - main hardware
-#       storage...
-#         <device>... json here: {
-#             model
-#             mount - mount point
-#             smart...
-#             subdevs
-#             type
-#           }
-#           state - (ok,warn,crit,unknown)
-#           temperature
-#           updated
+;devices = uncomment and supply your space-separated list if you don't want to rely on upsc -l output
 
+; device's root topic. $$device will be substituted by the device name
+device_topic = ${root_topic}/$$device
+
+; attribute to sub-topic name map to post directly. space-separated attr:topic pairs
+one_to_one = device.type:type 
+  battery.charge:batt_charge
+  input.voltage:in_volt
+  ups.load:out_load
+
+; these attributes will be included into report to device_topic under the "attributes"{} json section
+; separate by space, multiline allowed
+; NOTE that device.mfr,  device.model,  device.type and  ups.status will be included always
+bulk_report = battery.charge
+  battery.runtime
+  input.voltage
+  input.current
+  input.frequency
+  input.load
+  input.power
+  output.voltage
+  output.frequency
+  output.current
+  ups.alarm
+  ups.load
+  ups.power
+  ups.power.nominal

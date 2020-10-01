@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+# This script produces reports on electrical power and push it into mqtt.
+# repo is in github.com/kadavris
+import argparse
+import configparser
+import os
+import os.path
+import re
+import signal
+import socket
+import sys
+import shlex, subprocess
+import time
+
+#############################################################
+def handle_termination(signum, frame):
+	if args.debug:
+		print( "signal caught. exitting." )
+
+	if sender:
+		sender.terminate()
+
+		
+	sys.exit(0)
+
+#############################################################
+def load_config( c_file ):
+	global args, config
+
+	file = c_file
+
+	if not os.path.exists( file ):
+		if re.search( r'/', file ):
+			print( "Can't open config: " + file )
+			sys.exit(1)
+
+		file = os.path.dirname( sys.argv[0] ) + '/' + c_file
+
+		if not os.path.exists( file ):
+			file = '/etc/smarthome/reporters/' + c_file
+
+	args.debug and print( "+ Loading config: " + file )
+
+	config = configparser.ConfigParser( interpolation = configparser.ExtendedInterpolation() )
+	config.read( file )
+
+########################################
+# collects data from upsc output for given device.
+# return hash: { model:model+s/n, smart:attributes json, temperature }
+def get_upsc_output( device ):
+	global args, config
+
+	ret = { "model": "UNKNOWN", "attributes":{}, "errors":'' }
+
+	need = [ # minimal attributes needed
+		'device.mfr', # device.mfr: EATON
+		'device.model', # device.model: 5E 1500i
+		'device.type', # device.type: ups
+		'ups.status', # ups.status: OL
+	]
+	ret[ 'need' ] = need
+
+	if 'bulk_report' in config[ 'power' ]:
+		ret[ 'bulk_report' ] = config[ 'power' ].get( 'bulk_report' ).split( )
+		need += ret[ 'bulk_report' ]
+
+	upsc = subprocess.Popen( [ 'upsc', device ],
+				stdin = subprocess.DEVNULL, stdout = subprocess.PIPE,
+				stderr = ( None if args.debug else subprocess.DEVNULL ), text = True )
+	
+	if upsc.poll():
+		if upsc.returncode > 0:
+			ret[ "errors" ] = '"upsc error":"ended with rc: ' + upsc.returncode + '"'
+			print( ret[ "errors" ] )
+		return ret
+
+	out, err = upsc.communicate() # communicate() will return all output at once
+	if err and ( err != '' ):
+		ret[ "errors" ] = '"upsc error":"' + err + "'"
+		print( ret[ "errors" ] )
+		return ret
+	
+	for l in out.splitlines():
+		# attributes array
+		rm = re.match( r'([\w.]+):\s+(.+)', l )
+		if not rm:
+			continue
+
+		id = rm.group( 1 )
+		value = rm.group( 2 )
+
+		if not id in need:
+			continue
+
+		ret[ 'attributes' ][ id ] = value
+
+		if args.debug:
+			print( 'got:', id, ':', value )
+
+		# fill in specials:
+		if id == 'device.mfr': # ups.mfr: EATON
+			ret[ 'model' ] = "Model: " + value
+		elif id == 'device.model': # ups.model: 5E 1500i
+			ret[ 'model' ] += ' ' + value
+
+	return ret
+
+########################################
+# This function will check upsd/nut status
+def check_nut():
+	global args, config, sender
+
+	cf = config[ 'power' ]
+	
+	dev_list = []
+	if 'devices' in cf:
+		dev_list = cf[ 'devices' ].split()
+	else:
+		upsc = subprocess.Popen( [ 'upsc', '-l' ], 
+				stdin = subprocess.DEVNULL, stdout = subprocess.PIPE,
+				stderr = ( None if args.debug else subprocess.DEVNULL ), text = True )
+		dev_list = upsc.communicate()[0].splitlines()
+
+	for device in dev_list:
+		if args.debug:
+			print( 'device:', device )
+
+		topic = cf[ 'device_topic' ].replace( '$device', device )
+
+		if args.debug:
+			print( '\ttopic:', topic )
+		# topic structure:
+		# power
+		#     <dev_id>
+		#         ctl...
+		#         proto...
+		#         state...
+		#         updated
+
+		data = get_upsc_output( device )
+
+		# we will count the configured checks to report if none were enabled actually
+		checks_run = 0
+		checks_with_errors = 0
+
+		msg = ''
+		checks_run += 1
+		if data[ 'errors' ] != '' or ( not 'ups.status' in data[ 'attributes' ] ):
+			msg = data[ 'errors' ]
+			checks_with_errors += 1
+		else:
+			msg = data[ 'attributes' ][ 'ups.status' ]
+
+		if args.debug:
+			print( 'sending:', msg )
+
+		sender.stdin.write( '{ "publish":"' + msg + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'state_topic' ] + '" ] }\n' )
+
+		# quick post one-to-one data
+		if 'one_to_one' in cf:
+			for pair in cf.get( 'one_to_one' ).split( ):
+				a,t = pair.split( ':' )
+				checks_run += 1
+				msg = ''
+
+				if a in data[ 'attributes' ]:
+					msg = data[ 'attributes' ][ a ]
+				else:
+					msg = 'one_to_one attribute is missing from report: ' + a
+					checks_with_errors += 1
+
+				sender.stdin.write( '{ "publish":"' + msg + '", "retain":true, "topics":[ "'
+							+ topic + '/' + t + '" ] }\n' )
+
+		# doing bulk report message. we'll use mpublish, so no quoting is needed
+		msg = '{ "model":"' + data[ 'model' ] + '", "attributes":{'
+		
+		for k in data[ 'need' ]:
+			msg += '"' + k + '":"' + ( data[ 'attributes' ][ k ] if k in data[ 'attributes' ] else 'bulk_report attribute is missing from report: ' + k ) + '", '
+		
+		for k in data[ 'bulk_report' ]:
+			if k in data[ 'attributes' ]:
+				msg += '"' + k + '":"' + data[ 'attributes' ][ k ] + '", '
+		
+		msg = msg[0:-2] + ' }, "errors":"' + data[ "errors" ] + '" }'
+
+		stop = '25@5h256h256H'
+		sender.stdin.write( '{ "mpublish":"' + stop + '", "retain":true, "topics":[ "' + topic + '" ] }\n' + msg + stop + '\n' )
+
+		sender.stdin.write( '{ "publish":"'
+			+ dates_json.replace( '}', r', \"checks run\":' + str( checks_run ) + r', \"checks with errors\":' + str( checks_with_errors ) + '}' )
+			+ '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'updated_topic' ] + '" ] }\n' )
+	# end loop: for device in os.listdir( '/dev' ):
+
+####################################################
+global args, config, dates_json, root_topic, sender
+
+config_path = '/etc/smarthome/reporters/reporters.ini' # default
+
+####################################################
+
+parser = argparse.ArgumentParser( description = 'Collect electrical power info and post it to mqtt' )
+parser.add_argument( '-c', '--config', dest = 'config_path', action = 'store', default = config_path, help = 'path to non-default (' + config_path + ') config file')
+parser.add_argument( '-d', '--debug', dest = 'debug', action = 'store_true', default = False, help = 'debug mode')
+parser.add_argument( '-l', '--loop', dest = 'loop', action = 'store', type = int, default = 0, help = 'Loop forever, sleeping <int> seconds between passes' )
+parser.add_argument( 'action', nargs = '?', default = '', help = 'non-default action name to run' )
+
+args = parser.parse_args()
+
+load_config( args.config_path )
+
+# mqtt sender script tend to hang up (why no SIGPIPE on stdin read?) if we exit hastily. trying to avoid this
+signal.signal( signal.SIGINT,  handle_termination )
+signal.signal( signal.SIGTERM, handle_termination )
+
+hba = socket.gethostbyaddr(socket.gethostname())
+hostname = re.sub( r'\..+', '', hba[ 0 ] )
+
+sender = subprocess.Popen( shlex.split( config[ 'power' ][ 'sender' ] ), bufsize = 1, # default bufsize may gobble a whole loop of data and do nothing till the next
+		stdin = subprocess.PIPE, stdout = ( None if args.debug else subprocess.DEVNULL ),
+		stderr = ( None if args.debug else subprocess.DEVNULL ), text = True )
+
+if args.debug:
+	print( 'sender:', sender.args )
+	if sender.poll():
+		print( 'DOA! rc:', sender.poll() )
+		sys.exit(1)
+
+dates_json = ''
+queue = []
+mounts = dict()
+
+if args.action != '':
+	queue.append( args.action )
+else:
+	queue = [ check_nut ]
+
+while True:
+	dates_json = '{ "date":"' + time.ctime() + '", "timestamp":' + str( int( time.time() ) ) + ' }'
+	dates_json = dates_json.replace( r'"', r'\"')
+
+	for func in queue:
+		func()
+
+	if args.loop == 0:
+		break
+
+	time.sleep( args.loop )
+
+sender.communicate( input = '\n\n{ "cmd":"exit" }\n' )
+
+try:
+	sender.wait( timeout = 15.0 )
+except:
+	pass
+
+sender.terminate()
