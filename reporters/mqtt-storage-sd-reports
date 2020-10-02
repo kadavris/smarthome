@@ -172,7 +172,8 @@ def check_storage_sd():
 			sender.stdin.write( '{ "mpublish":"' + stop + '", "retain":true, "topics":[ "' + topic + '" ] }\n' + msg + stop + '\n' )
 			sender.stdin.write( '{ "publish":"' + sctl[ 'temperature' ] + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'temperature_topic' ] + '" ] }\n' )
 
-		sender.stdin.write( '{ "publish":"' + dates_json.replace( '}', ', "checks_run":' + str( checks_run ) + '}' )
+		sender.stdin.write( '{ "publish":"' + dates_json.replace( '}', r', \"checks_run\":' + str( checks_run )
+			+ r', \"checks with errors\":' + str( checks_with_errors )+ '}' )
 			+ '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'updated_topic' ] + '" ] }\n' )
 	# end loop: for device in os.listdir( '/dev' ):
 
