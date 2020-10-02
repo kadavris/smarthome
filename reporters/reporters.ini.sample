@@ -45,26 +45,28 @@ root_topic = hw/power
 ; device's root topic. $$device will be substituted by the device name
 device_topic = ${root_topic}/$$device
 
+; NOTE: replace all '.' with '_'! Reported attribute names will be processed in this way
+
 ; attribute to sub-topic name map to post directly. space-separated attr:topic pairs
-one_to_one = device.type:type 
-  battery.charge:batt_charge
-  input.voltage:in_volt
-  ups.load:out_load
+one_to_one = device_type:type 
+  battery_charge:batt_charge
+  input_voltage:in_volt
+  ups_load:out_load
 
 ; these attributes will be included into report to device_topic under the "attributes"{} json section
 ; separate by space, multiline allowed
-; NOTE that device.mfr,  device.model,  device.type and  ups.status will be included always
-bulk_report = battery.charge
-  battery.runtime
-  input.voltage
-  input.current
-  input.frequency
-  input.load
-  input.power
-  output.voltage
-  output.frequency
-  output.current
-  ups.alarm
-  ups.load
-  ups.power
-  ups.power.nominal
+; NOTE that device_mfr,  device_model,  device_type and  ups_status will be included always
+bulk_report = battery_charge
+  battery_runtime
+  input_voltage
+  input_current
+  input_frequency
+  input_load
+  input_power
+  output_voltage
+  output_frequency
+  output_current
+  ups_alarm
+  ups_load
+  ups_power
+  ups_power_nominal
