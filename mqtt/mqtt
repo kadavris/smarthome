@@ -14,7 +14,10 @@ import time
 import uuid
 
 #############################################################
-def handle_termination(signum, frame):
+def handle_termination( signum, frame ):
+	if signum == signal.SIGALRM:
+		print( "! Special timeout detected. exitting", file = stderr )
+
 	sys.exit(0)
 
 #############################################################
@@ -48,14 +51,23 @@ def on_log( client, userdata, level, buf ):
 def on_connect( client, userdata, flags, rc ):
 	global args
 
-	pass
+	# checking for problems
+	if on_connect.connected_on > 0: # reconnect
+		if time.time() - on_connect.connected_on < 3.0: # less than 3 sec
+			on_connect.fast_reconnects += 1
+		else:
+			on_connect.fast_reconnects = 0
+
+		if on_connect.fast_reconnects == 3: # lucky number
+			print( "! Too many fast reconnects. exitting.", file = stderr )
+			sys.exit( 2 )
+
+	on_connect.connected_on = time.time()
 
 ####################################################
 # global simplifier of things
 def connect():
 	global args, client_conn, connected, section
-
-	client_conn.on_connect = on_connect
 
 	if connected:
 		client_conn.disconnect()
@@ -95,7 +107,12 @@ def on_publish( client, userdata, mid ):
 
 ####################################################
 def subscribe( client, topic ):
+	signal.alarm( 30 ) # there have been some strange delays on sending packets, resulting in hanging processes
+
 	( r, mid ) = client.subscribe( topic, args.qos )
+
+	signal.alarm( 0 )
+
 	if r != mqtt.MQTT_ERR_SUCCESS:
 		print( '{ "message":"subscribe failed", "rc":' + str( r ) + ', "topic":"' + topic + '" }' )
 		return False
@@ -226,8 +243,7 @@ def go_stdin():
 		else:
 			print( '{ "message":"unknown command", "rc":1 }' )
 
-	client_conn.loop_stop()
-
+	signal.alarm( 30 ) # there have been some strange delays on sending packets, resulting in hanging processes
 	client_conn.disconnect()
 
 	sys.exit( 0 )
@@ -240,7 +256,8 @@ config_path = '/etc/smarthome/mqtt/mqtt.ini' # default
 connected = False # for handling stuff in stdin mode
 mids = dict() # to track messages in stdin mode
 messages_received = 0 # to check if we got answer for one-shot sub
-
+on_connect.fast_reconnects = 0 # how many attempts to reconect were within the short time period
+on_connect.connected_on = 0 # time()
 ####################################################
 
 parser = argparse.ArgumentParser( description = 'Send or subscribe to mqtt messages' )
@@ -289,7 +306,11 @@ elif 'clientid' in section:
 else:
 	cid = 'mqtt-tool-' + str( uuid.uuid4() )
 
+signal.signal( signal.SIGALRM, handle_termination )
+
 client_conn = mqtt.Client( cid )
+client_conn.on_connect = on_connect
+
 if args.debug:
 	client_conn.on_log = on_log
 	client_conn.enable_logger()
@@ -362,6 +383,8 @@ if args.message == None:
 	sys.exit(1);
 
 for t in args.topics:
+	signal.alarm( 30 ) # there have been some strange delays on sending packets, resulting in hanging processes
+
 	try:
 		client_conn.publish( t, args.message, retain = args.retain, qos = args.qos ).wait_for_publish()
 		if args.debug:
