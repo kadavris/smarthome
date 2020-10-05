@@ -7,6 +7,8 @@ sender="/etc/smarthome/mqtt/mqtt --stdin --quiet"
 host=`hostname|sed "s/\n//"`
 prefix="sys/$host"
 
+touch /run/mqtt-boot-send.runonce
+
 {
   msg=`uname -a|sed "s/\n//" `
   echo '{ "publish":"'$msg'", "retain":true, "topics":[ "'$prefix'" ] }'
