@@ -41,6 +41,19 @@ def load_config( c_file ):
 	config.read( file )
 
 ########################################
+def spawn_sender():
+	global args, config, sender
+
+	sender = subprocess.Popen( shlex.split( config[ 'storage' ][ 'sender' ] ), bufsize = 1, # default bufsize may gobble a whole loop of data and do nothing till the next
+			stdin = subprocess.PIPE, stdout = ( None if args.debug else subprocess.DEVNULL ),
+			stderr = ( None if args.debug else subprocess.DEVNULL ), text = True )
+
+	if sender.poll():
+		if sender.returncode > 0:
+			print( '? ERROR with running ', sender.args, ": exitted abnormally with rc:", sender.returncode )
+			sys.exit( 1 )
+
+########################################
 def get_mounts():
 	global args, config, sender
 
@@ -64,7 +77,6 @@ def do_smartctl( device ):
 		"model": "UNKNOWN", "smart": '', "temperature": "UNKNOWN", "status":"",
 		"tests done":0, "tests failed":0,
 		"age":0,
-		"sctl err":''
 	}
 	attrs = []
 
@@ -74,14 +86,14 @@ def do_smartctl( device ):
 
 	if sctl.poll():
 		if sctl.returncode > 0:
-			ret[ "sctl err" ] = ',"smartctl error":"ended with rc: ' + sctl.returncode + '"'
-			print( ret[ "sctl err" ] )
+			ret[ "status" ] = ',"smartctl error":"ended with rc: ' + sctl.returncode + '"'
+			print( ret[ "status" ] )
 		return ret
 
 	out, err = sctl.communicate() # communicate() will return all output at once
 	if err != '':
-		ret[ "sctl err" ] = ',"smartctl error":"' + err + "'"
-		print( ret[ "sctl err" ] )
+		ret[ "status" ] = ',"smartctl error":"' + err + "'"
+		print( ret[ "status" ] )
 		return ret
 
 	place = 'body' # basic state machine
@@ -100,19 +112,23 @@ def do_smartctl( device ):
 		if place == 'attr':
 			# attributes array
 			#ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
-			rm = re.match( r'\D*(\d+)\s+(\S+)(\s+\S+){7}\s+(.+)', l )
+			#1   2                       3        4     5     6      7         8        9           10
+			rm = re.match( r'\D*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)', l )
 			if not rm:
 				place = 'body'
 				continue
 
 			id = rm.group( 1 )
 			name = re.sub( '_+', ' ', rm.group( 2 ) )
-			data = re.sub( '"', r'\\"', rm.group( 4 ) )
+			data = re.sub( '"', r'\\"', rm.group( 10 ) )
 
 			attrs.append( '"' + id + '":{ "name":"' + name + '", "data":"' + data + '" }' )
 
+			if int( rm.group( 4 ) ) < int( rm.group( 6 ) ): # value < threshold - fail
+
 			if id == '194':
 				ret[ 'temperature' ] = re.sub( r'\D.+', '', data )
+
 			#  9 Power_On_Hours          0x0032   099   099   000    Old_age   Always       -       915 (222 63 0)
 			# we'll use it to check if the tests are fresh enough
 			elif id == '9':
@@ -168,6 +184,9 @@ def do_smartctl( device ):
 
 	sctl.terminate()
 
+	if ret[ 'status' ] == '':
+		ret[ 'status' ] = 'OK'
+
 	ret[ 'smart' ] = '{\n  ' + ",\n  ".join( attrs ) + '\n}'
 
 	return ret
@@ -198,7 +217,8 @@ def check_storage_sd():
 		checks_run = 0
 		checks_with_errors = 0
 
-		state = '' # we'll try to determina it by any test enabled
+		state = [] # we'll try to determine it by any test enabled
+		severity = 0 # how bad troubles are. 0-OK, 1-warn, >1 - crit
 
 		# doing check_ide_smart run if configured
 		if 'check_ide_smart' in cf:
@@ -207,11 +227,12 @@ def check_storage_sd():
 			params.append( '/dev/' + device )
 			cis = subprocess.Popen( params, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True )
 
-			state, err = cis.communicate() # communicate will slurp output and close pipe
-			state = re.sub( '^OK .*', 'OK', state.rstrip() ) # strip out clutter
-			if err != '':
+			st, err = cis.communicate() # communicate will slurp output and close pipe
+			st = re.sub( '^OK .*', 'OK', state.rstrip() ) # strip out clutter
+			if st != 'OK' or err != '':
 				checks_with_errors += 1
-				state += '(' + err + ')'
+				state.append( st + '(' + err + ')' )
+				severity += 1
 
 		# doing smartctl run if configured
 		sctl = {}
@@ -219,34 +240,43 @@ def check_storage_sd():
 			checks_run += 1
 			sctl = do_smartctl( device )
 
-			if sctl[ "sctl err" ] != '':
+			if sctl[ "status" ] != 'OK':
 				checks_with_errors += 1
+				severity += 1
+
+				state.append( sctl[ "status" ] )
 
 			if sctl[ "testing status" ] != 'OK':
 				checks_with_errors += 1
+				severity += 1
 
-				if state == '':
-					state = 'WARNING:'
+				state.append( sctl[ "testing status" ] )
 
-				state += ' ' + sctl[ "testing status" ]
-
-			msg = '{ "model":"' + sctl[ 'model' ] + '",' + sctl[ "sctl err" ] + '\n"smart":"' + sctl[ 'smart' ] + '"'\
+			msg = '{ "model":"' + sctl[ 'model' ] + '",\n"status":"' + sctl[ "status" ] + '",\n"smart":"' + sctl[ 'smart' ] + '"'\
 					+ ',\n"tests done":' + str( sctl[ 'tests done' ] ) + ',"tests failed":' + str( sctl[ 'tests failed' ] )\
 					+ ' }'
 
-			if state == '': # must fill in. mimic check_ide_smart here
-				if sctl[ 'tests failed' ] > 0:
-					state = 'WARNING: ' + sctl[ 'tests failed' ] + ' of ' + sctl[ 'tests done' ] + ' recent tests failed!'
-				else:
-					state = 'OK'
+			if sctl[ 'tests failed' ] > 0:
+				state.append( sctl[ 'tests failed' ] + ' of ' + sctl[ 'tests done' ] + ' recent tests failed!' )
+				severity += 1
+
+			if ret[ 'status' ] != 'OK': # some value went below threshold - prefail state at least
+				state.append( ret[ 'status' ] )
+				severity += 2
 
 			# we'll use mpublish, so no quoting needed
 			stop = '25@5h256h256H'
 			sender.stdin.write( '{ "mpublish":"' + stop + '", "retain":true, "topics":[ "' + topic + '" ] }\n' + msg + stop + '\n' )
 			sender.stdin.write( '{ "publish":"' + sctl[ 'temperature' ] + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'temperature_topic' ] + '" ] }\n' )
 
-		if state != '': # so we got somethig meaningful to report here
-			sender.stdin.write( '{ "publish":"' + state.replace( '"', r'\"' ) + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'state_topic' ] + '" ] }\n' )
+		if check_run > 0: # so we got somethig meaningful to report here
+			st = ''
+			if severity == 0:
+				st = 'OK'
+			else:
+				st = ( 'WARNING: ' if severity == 1 else 'CRITICAL: ' ) + ', '.join( state ).replace( '"', r'\"' )
+
+			sender.stdin.write( '{ "publish":"' + st + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'state_topic' ] + '" ] }\n' )
 
 			sender.stdin.write( '{ "publish":"' + dates_json.replace( '}', r', \"checks run\":' + str( checks_run )
 				+ r', \"checks with errors\":' + str( checks_with_errors )+ '}' )
@@ -281,9 +311,7 @@ hostname = re.sub( r'\..+', '', hba[ 0 ] )
 signal.signal( signal.SIGINT,  handle_termination )
 signal.signal( signal.SIGTERM, handle_termination )
 
-sender = subprocess.Popen( shlex.split( config[ 'storage' ][ 'sender' ] ), bufsize = 1, # default bufsize may gobble a whole loop of data and do nothing till the next
-		stdin = subprocess.PIPE, stdout = ( None if args.debug else subprocess.DEVNULL ),
-		stderr = ( None if args.debug else subprocess.DEVNULL ), text = True )
+spawn_sender()
 
 if args.debug:
 	print( 'sender:', sender.args )
@@ -302,6 +330,10 @@ while True:
 	dates_json = dates_json.replace( r'"', r'\"')
 
 	for func in queue:
+		if sender.poll():
+			if sender.returncode > 0:
+				print( '? NOTE:', sender.args, "exitted abnormally with rc:", sender.returncode )
+				spawn_sender()
 		func()
 
 	if args.loop == 0:
