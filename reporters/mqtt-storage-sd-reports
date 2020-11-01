@@ -61,9 +61,12 @@ def get_mounts():
 
 	while True:
 		l = mf.readline()
+
 		if len( l ) == 0:
 			break
+
 		rm = re.match( r'^(\S+)\s+(\S+)\s+(\S+)\s+(.+)', l ) # /dev/X mount_point fs_type options
+
 		mounts[ rm.group( 2 ) ] = { 'disk': rm.group( 1 ), 'fstype': rm.group( 3 ), 'options': rm.group( 4 ) }
 
 	mf.close()
@@ -113,7 +116,7 @@ def do_smartctl( device ):
 			# attributes array
 			#ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
 			#1   2                       3        4     5     6      7         8        9           10
-			rm = re.match( r'\D*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)', l )
+			rm = re.match( r'\D*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)', l )
 			if not rm:
 				place = 'body'
 				continue
@@ -125,6 +128,7 @@ def do_smartctl( device ):
 			attrs.append( '"' + id + '":{ "name":"' + name + '", "data":"' + data + '" }' )
 
 			if int( rm.group( 4 ) ) < int( rm.group( 6 ) ): # value < threshold - fail
+				ret[ "status" ] += ' WARN: attribute ' + name + ' value (' + rm.group( 4 ) + ') > threshold (' + rm.group( 6 ) + ').'
 
 			if id == '194':
 				ret[ 'temperature' ] = re.sub( r'\D.+', '', data )
@@ -228,7 +232,8 @@ def check_storage_sd():
 			cis = subprocess.Popen( params, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True )
 
 			st, err = cis.communicate() # communicate will slurp output and close pipe
-			st = re.sub( '^OK .*', 'OK', state.rstrip() ) # strip out clutter
+			st = re.sub( '^OK .*', 'OK', st.rstrip() ) # strip out clutter
+
 			if st != 'OK' or err != '':
 				checks_with_errors += 1
 				state.append( st + '(' + err + ')' )
@@ -260,21 +265,29 @@ def check_storage_sd():
 				state.append( sctl[ 'tests failed' ] + ' of ' + sctl[ 'tests done' ] + ' recent tests failed!' )
 				severity += 1
 
-			if ret[ 'status' ] != 'OK': # some value went below threshold - prefail state at least
-				state.append( ret[ 'status' ] )
+			if sctl[ 'status' ] != 'OK': # some value went below threshold - prefail state at least
+				state.append( sctl[ 'status' ] )
 				severity += 2
 
 			# we'll use mpublish, so no quoting needed
 			stop = '25@5h256h256H'
+
+			if sender.poll(): # check if it is still alive
+				spawn_sender()
+
 			sender.stdin.write( '{ "mpublish":"' + stop + '", "retain":true, "topics":[ "' + topic + '" ] }\n' + msg + stop + '\n' )
 			sender.stdin.write( '{ "publish":"' + sctl[ 'temperature' ] + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'temperature_topic' ] + '" ] }\n' )
 
-		if check_run > 0: # so we got somethig meaningful to report here
+		if checks_run > 0: # so we got somethig meaningful to report here
 			st = ''
+
 			if severity == 0:
 				st = 'OK'
 			else:
 				st = ( 'WARNING: ' if severity == 1 else 'CRITICAL: ' ) + ', '.join( state ).replace( '"', r'\"' )
+
+			if sender.poll(): # check if it is still alive
+				spawn_sender()
 
 			sender.stdin.write( '{ "publish":"' + st + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'state_topic' ] + '" ] }\n' )
 

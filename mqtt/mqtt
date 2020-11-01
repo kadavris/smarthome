@@ -16,7 +16,7 @@ import uuid
 #############################################################
 def handle_termination( signum, frame ):
 	if signum == signal.SIGALRM:
-		print( "! Special timeout detected. exitting", file = stderr )
+		print( "! Special timeout detected. exitting", file = sys.stderr )
 
 	sys.exit(0)
 
@@ -59,7 +59,7 @@ def on_connect( client, userdata, flags, rc ):
 			on_connect.fast_reconnects = 0
 
 		if on_connect.fast_reconnects == 3: # lucky number
-			print( "! Too many fast reconnects. exitting.", file = stderr )
+			print( "! Too many fast reconnects. exitting.", file = sys.stderr )
 			sys.exit( 2 )
 
 	on_connect.connected_on = time.time()
