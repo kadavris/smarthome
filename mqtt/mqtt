@@ -51,15 +51,17 @@ def on_log( client, userdata, level, buf ):
 def on_connect( client, userdata, flags, rc ):
 	global args
 
-	# checking for problems
-	if on_connect.connected_on > 0: # reconnect
+	# checking for problems:
+	# connect() will set connected to false before reconnect attempt, so we know if it us of automatic
+	if not connected and on_connect.connected_on > 0: # reconnect
 		if time.time() - on_connect.connected_on < 3.0: # less than 3 sec
 			on_connect.fast_reconnects += 1
 		else:
 			on_connect.fast_reconnects = 0
 
 		if on_connect.fast_reconnects == 3: # lucky number
-			print( "! Too many fast reconnects. exitting.", file = sys.stderr )
+			print( "mqtt-tool: Too many fast reconnects. exitting.", file = sys.stderr )
+			signal.alarm( 5 ) # there have been some strange delays, resulting in hanging processes
 			sys.exit( 2 )
 
 	on_connect.connected_on = time.time()
@@ -79,7 +81,7 @@ def connect():
 	connected = True
 
 	if args.debug:
-		print( "+ Connected" )
+		print( "mqtt-tool: Connected" )
 
 	client_conn.loop_start()
 
@@ -172,7 +174,7 @@ def go_stdin():
 			line_in = ''
 
 		if args.debug:
-			print( "+ json parsed OK" )
+			print( "mqtt-tool: json parsed OK" )
 
 		if 'user' in j: # { "user":"name", "password":"..." }
 			client_conn.username_pw_set( j['user'], password = j[ 'password' ] if 'password' in j else None )
@@ -286,11 +288,11 @@ if section == '':
 	section = config[ 'DEFAULT' ][ 'server' ]
 
 if not section in config:
-	print( "! Section name", section, " not in", config_path )
+	print( "mqtt-tool: Section name", section, " not in", config_path )
 	sys.exit( 1 )
 
 if args.debug:
-	print( "Using .ini section: ", section )
+	print( "mqtt-tool: Using .ini section: ", section )
 
 section = config[ section ]
 
@@ -351,11 +353,11 @@ else: # not SSL. note that user/pass already set when we checked for command lin
 		section[ 'port' ] = '1883'
 
 if authmode == '':
-	print( "! ERROR: authentication mode were not set. Check you .ini and/or command line!" )
+	print( "mqtt-tool: ERROR: authentication mode were not set. Check you .ini and/or command line!" )
 	sys.exit(1)
 
 if args.debug:
-	print( "+ auth mode:", authmode )
+	print( "mqtt-tool: auth mode:", authmode )
 
 if not 'keepalive' in section:
 	section[ 'keepalive' ] = '20'
@@ -366,7 +368,7 @@ if args.stdin_mode:
 
 #--------------------------------------------
 if args.topics == None:
-	print( "Topic(s) are undefined!" )
+	print( "mqtt-tool: Topic(s) are undefined!" )
 	parser.print_help()
 	sys.exit(1)
 
@@ -378,7 +380,7 @@ if args.subscribe:
 
 #--------------------------------------------
 if args.message == None:
-	print( "! Message is not provided!" )
+	print( "mqtt-tool: Message is not provided!" )
 	parser.print_help()
 	sys.exit(1);
 
@@ -388,7 +390,7 @@ for t in args.topics:
 	try:
 		client_conn.publish( t, args.message, retain = args.retain, qos = args.qos ).wait_for_publish()
 		if args.debug:
-			print( "published to " + t + " - " + args.message )
+			print( "mqtt-tool: published to " + t + " - " + args.message )
 	except:
 		break
 
