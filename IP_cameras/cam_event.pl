@@ -24,13 +24,12 @@ my $show_help = 0;
 ####################################################
 # these are (re)initialized within init() call:
 my @cams_capture; # cam names to rec from
-my $event_id = ''; # name of the event that will be added to file name
+my $event_id = 'test_event'; # name of the event that will be added to file name
 my $event_start = time; # base for snap counts
 my $log = 0; # no log will be produced
 my $persistent; # the recordings will be synced on the -p=on until the call with -p=off with the same event ID will be made
 my $snap_time; # (seconds) will snap so many records from before and after current
 
-init();
 ####################################################
 
 GetOptions (
@@ -46,7 +45,9 @@ GetOptions (
 
 umask 0007;
 
-load_config( $config_path );
+$config_path = load_config( $config_path );
+
+$snap_time or $snap_time = $o{ 'default snap time' };
 
 # --- MQTT ---
 my %mqtt_pers_timeouts; # persistent recording mode t/o
@@ -58,7 +59,15 @@ if ( ( ! $persistent && $#ARGV == -1 ) || $show_help )
   help();
 }
 
-@ARGV and @cams_capture = ( @ARGV );
+if ( @ARGV )
+{
+  @cams_capture = ( @ARGV );
+}
+else
+{
+  @cams_capture = keys %cams;
+}
+
 
 main();
 
@@ -72,7 +81,6 @@ sub main
   my $persistent_flag = sprintf ( $o{ 'persistent flag template' }, $event_id );
 
   my %out_templates; # prefix for link&sync files
-  my %out_index; # { cam name } = index for output/linked files. goes in range of 0..N($snap_time);
   my %old_recs; # will hold the array of old records names to link them in sequence
 
   $o{ 'events dir' } .= '/' . get_times('d');
@@ -152,6 +160,9 @@ sub main
   # now linking what's found into the event dir
   ####################################################
 
+  # { cam name } = initial index for the coming new live recs past event's start.
+  my %out_index;
+
   my $time_left = $snap_time; # seconds. dumb logic here
 
   for my $cam ( @cams_capture )
@@ -160,27 +171,28 @@ sub main
 
     my $sec = 0;
 
-    my $old_recs_count = $#{ $old_recs{ $cam } };
-    $out_index{ $cam } = $old_recs_count + 2;
+    my $old_recs_max = $#{ $old_recs{ $cam } };
+    $out_index{ $cam } = $old_recs_max + 2; # pre-event recs count (aready done) + zero-time record (live now)
 
-    for my $i ( 0..$old_recs_count )
+    for my $i ( 0..$old_recs_max )
     {
-      my $orig_file = $old_recs{ $cam }->[$i]->{'name'};
+      my $orig_file = $old_recs{ $cam }->[ $i ]->{ 'name' };
       my $outname = $out_templates{ $cam };
 
-      my $index = sprintf '%03d(%d sec)', $old_recs_count - $i + 1, $sec;
+      my $index = sprintf '%03d(%d sec)', $old_recs_max - $i + 1, $sec;
       $outname =~ s/%index%/$index/g;
 
       $debug and print "+ [$$] cam: <$cam> OLD seg link '$orig_file'\n";# --> '$outname'\n";
 
-      link $orig_file, $outname or print "! link $orig_file, $outname: $!\n";
+      link( $orig_file, $outname ) or print "! link $orig_file, $outname: $!\n";
 
-      $sec -= $old_recs{ $cam }->[$i]->{'seglen'};
+      $sec -= $old_recs{ $cam }->[ $i ]->{ 'seglen' };
     }
 
     request_sync();
 
-    $debug and print "+ [$$] Now waiting ", (defined($persistent) ? 'PERSISTENTLY' : "for next $snap_time seconds" ), " for cam $cam, past the ", $old_recs{ $cam }->[0]->{ 'name' }, "\n";
+    $debug and print "+ [$$] Now waiting ", (defined($persistent) ? 'PERSISTENTLY' : "for the next $snap_time seconds" ),
+                     " for cam $cam, past the ", $old_recs{ $cam }->[ 0 ]->{ 'name' }, "\n";
   }
 
   ####################################################
@@ -192,6 +204,7 @@ sub main
   {
     sleep( 5 );
 
+    # checking if we're done
     if ( defined( $persistent ) )
     {
       if ( ! -f $persistent_flag ) # we're done
@@ -203,7 +216,7 @@ sub main
 
     else # 'once' snap mode
     {
-      --$time_left;
+      $time_left -= 5; # make consistent with sleep() above!
 
       $debug and print ( $time_left % 10 == 0 ? "\n$time_left sec" : '.' );
 
@@ -212,7 +225,9 @@ sub main
       last if ! keys %out_index; # once mode - snap time exceeded for all cameras
     }
 
-    $dir = get_dir(); # get fresh list
+    # save another records
+
+    $dir = get_dir(); # get a fresh list
 
     for my $cam ( keys %out_index )
     {
@@ -222,7 +237,7 @@ sub main
         next if $f->{ 'cam' } ne $cam;
 
         last if $f->{ 'mtime' } < $event_start; # low end of snap seq. get to the next cam then
-        last if $f->{ 'name' } eq $old_recs{ $cam }->[0]->{ 'name' }; # no new files yet
+        last if $f->{ 'name' } eq $old_recs{ $cam }->[ 0 ]->{ 'name' }; # no new files yet
 
         # end of snap time for this cam?
         if ( ! defined( $persistent ) and $f->{ 'mtime' } > $event_start + $snap_time )
@@ -237,15 +252,15 @@ sub main
 
         $debug and print "+ [$$] cam <$cam> LIVE seg link '", $f->{'name'}, "\n";#"' --> '$outname'\n";
 
-        link $f->{ 'name' }, $outname or print "! link ", $f->{'name'}, " $outname: $!\n";
+        link( $f->{ 'name' }, $outname ) or print STDERR "! link ", $f->{'name'}, " $outname: $!\n";
 
         $debug or request_sync();
 
         ++$out_index{ $cam };
 
-        $old_recs{ $cam }->[0]->{'name'} = $f->{'name'}; # let's watch past this one
+        $old_recs{ $cam }->[ 0 ]->{ 'name' } = $f->{ 'name' }; # let's watch past this one on the next loops
 
-        $f = undef;
+        $f = undef; # mark as done
 
         last;
       } # @dir
@@ -259,11 +274,18 @@ sub main
 ####################################################
 
 ####################################################
-# returns current recordings directory contents
+# returns current recordings directory contents in a form of hash based on $o{ 'records list re' }:
+# 'cam' => camera name
+# 'name' => full file name
+# 'ts' -> YYYY-MM-DD...
+# 'pid' - PID
+# 'index' => sequential index
+# 'seglen' => this segment time
 sub get_dir
 {
   my $list = [];
 
+  #sort by time, newest first, quote file names
 #  my $cmd = "/bin/sh -c \"/bin/ls -ltQ --time-style=+\%s *" . $o{ 'records ext' } . "\" |";
   my $cmd = "/bin/ls -ltQ --time-style=+\%s";
 
@@ -318,6 +340,7 @@ sub touch_file
   close F;
 
   $debug and print "* touched $file\n";
+
   return 1;
 }
 
@@ -363,11 +386,13 @@ sub mqtt_misc
 
   for my $e ( keys %mqtt_pers_timeouts )
   {
-    next if ( $mqtt_pers_timeouts{ $e }->{ 't/o' } < $t );
+    my $data = $mqtt_pers_timeouts{ $e };
 
-    $debug and print "? MQTT: timeout of persistency: ", $mqtt_pers_timeouts{ $e }->{ 'msg' }, "\n";
+    next if ( $data->{ 't/o' } > $t );
 
-    mqtt_got_message( '<timeout>', $mqtt_pers_timeouts{ $e }->{ 'msg' } ); # stop it
+    $debug and print "? MQTT: timeout of persistency: ", $data->{ 't/o' }, '/', $t, '. ', $data->{ 'msg' }, "\n";
+
+    mqtt_got_message( '<timeout>', $data->{ 'msg' } ); # stop it
   }
 }
 
@@ -380,10 +405,13 @@ sub mqtt_got_message
   my ( $topic, $message ) = @_;
   $debug and print "+ mqtt_get_message(): topic: '$topic', msg: '$message'\n";
 
-  $message =~ s/[\`\'\"\&\\\|><;]+/_/g; # security
+  $message =~ s/[\`\'\"\&\\\|><;?*\$\#]+/_/g; # security`
   my ( $event, $mode, @cam_list ) = split ',', $message;
   $mode = lc $mode;
   $mode =~ s/^persistent //;
+
+  my $cmd = $o{ 'event processor' } . " -c '" . $config_path . "' -e '" . $event . "'";
+  $debug and $cmd .= ' -d';
 
   if ( $mode eq 'once' )
   {
@@ -399,29 +427,27 @@ sub mqtt_got_message
 
     $mqtt_pers_timeouts{ $event }->{ 't/o' } = time + $o{ 'mqtt event persistent timeout' };
     $mqtt_pers_timeouts{ $event }->{ 'msg' } = join( ',', ( $event, 'off', @cam_list ) );
+
+    $cmd .= ' -p on';
   } # pers on
 
   elsif( $mode eq 'off' )
   {
     exists( $mqtt_pers_timeouts{ $event } ) and delete( $mqtt_pers_timeouts{ $event } );
+
+    $cmd .= ' -p off';
   }
 
   else #might stop all here
   {
+    print STDERR "Invalid message received in $topic: $message\n";
+
     return;
   }
 
-  #$debug and return;
+  $debug and print "Running $cmd\n";
 
-  return if 0 < fork();
-
-  init();
-
-  @cams_capture = @cam_list;
-  $event_id = $event;
-  $mode ne 'once' and $persistent = $mode;
-
-  exit( main() );
+  system( $cmd . ' ' . join( ' ', @cam_list ) . '&' ) and print STDERR "! ERROR running $cmd\n";
 }
 
 #############################################################
@@ -446,19 +472,8 @@ Known camera IDs: ~, join(', ', keys %cams), "\n";
 # initialize for a new run
 sub init
 {
-  @cams_capture = keys %cams;
-  $event_start = time; # base for snap counts
-  $log = 0; # no log will be produced
-  $mqtt = undef;
+  # NOTE: may be called before config load!
 
-  $persistent = undef;
-
-  if ( ! defined( $snap_time ) || $snap_time < 5 || $snap_time > 3600 )
-  {
-    $snap_time = $o{ 'default snap time' };
-  }
-
-  defined( $event_id ) or $event_id = 'test_event';
 }
 
 #############################################################
@@ -482,4 +497,6 @@ sub load_config
   sysread( C, $cfg, 999999 ) or die "config is empty?";
   close C;
   eval $cfg;
+
+  return $file; # return actual path for re-use on mqtt event trriggers
 }

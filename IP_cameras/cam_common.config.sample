@@ -4,6 +4,8 @@
 $o{ 'whine email' } = '<your email or left empty>';
 $o{ 'smarthome base' } = '/etc/smarthome/'; # maybe unneeded already
 
+$o{ 'event processor' } = $o{ 'smarthome base' } . '/cam_event.pl'; # prog that will handle events
+
 $o{ 'log dir' } = '/var/log/smarthome'; # standard logging place
 
 $o{ 'base dir' } = '/var/lib/smarthome/IP_Cameras'; # where all recordings and misc stuff are kept
