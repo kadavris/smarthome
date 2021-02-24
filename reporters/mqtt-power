@@ -20,7 +20,6 @@ def handle_termination(signum, frame):
 	if sender:
 		sender.terminate()
 
-		
 	sys.exit(0)
 
 #############################################################
@@ -43,6 +42,51 @@ def load_config( c_file ):
 
 	config = configparser.ConfigParser( interpolation = configparser.ExtendedInterpolation() )
 	config.read( file )
+
+########################################
+def spawn_sender():
+	global args, config, sender
+
+	sender = subprocess.Popen( shlex.split( config[ 'power' ][ 'sender' ] ), bufsize = 1, # default bufsize may gobble a whole loop of data and do nothing till the next
+			stdin = subprocess.PIPE, stdout = ( None if args.debug else subprocess.DEVNULL ),
+			stderr = ( None if args.debug else subprocess.DEVNULL ), text = True )
+
+	if not sender:
+		print( '? ERROR running ', config[ 'power' ][ 'sender' ] )
+		sys.exit( 1 )
+
+	if sender.poll():
+		if sender.returncode > 0:
+			print( '? ERROR running ', sender.args, ": exitted abnormally with rc:", sender.returncode )
+			sys.exit( 1 )
+
+########################################
+def send_message( msg ):
+	global args, config, sender
+
+	while True:
+		if not sender:
+			spawn_sender()
+
+		err = False
+
+		try:
+			sender.stdin.write( msg )
+
+		except:
+			if args.debug:
+				print( "Error sending message." )
+
+			err = True
+
+		if not err:
+			return
+
+		if sender:
+			sender.terminate()
+			sender = None
+
+		time.sleep( 5 )
 
 ########################################
 # collects data from upsc output for given device.
@@ -88,6 +132,8 @@ def get_upsc_output( device ):
 
 		id = rm.group( 1 ).replace( '.', '_' )
 		value = rm.group( 2 )
+
+		id.replace( '.', '_' )
 
 		if not id in need:
 			continue
@@ -154,7 +200,7 @@ def check_nut():
 		if args.debug:
 			print( 'sending:', msg )
 
-		sender.stdin.write( '{ "publish":"' + msg + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'state_topic' ] + '" ] }\n' )
+		send_message( '{ "publish":"' + msg + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'state_topic' ] + '" ] }\n' )
 
 		# quick post one-to-one data
 		if 'one_to_one' in cf:
@@ -169,7 +215,7 @@ def check_nut():
 					msg = 'one_to_one attribute is missing from report: ' + a
 					checks_with_errors += 1
 
-				sender.stdin.write( '{ "publish":"' + msg + '", "retain":true, "topics":[ "'
+				send_message( '{ "publish":"' + msg + '", "retain":true, "topics":[ "'
 							+ topic + '/' + t + '" ] }\n' )
 
 		# doing bulk report message. we'll use mpublish, so no quoting is needed
@@ -185,9 +231,9 @@ def check_nut():
 		msg += ' }'
 
 		stop = '25@5h256h256H'
-		sender.stdin.write( '{ "mpublish":"' + stop + '", "retain":true, "topics":[ "' + topic + '" ] }\n' + msg + stop + '\n' )
+		send_message( '{ "mpublish":"' + stop + '", "retain":true, "topics":[ "' + topic + '" ] }\n' + msg + stop + '\n' )
 
-		sender.stdin.write( '{ "publish":"'
+		send_message( '{ "publish":"'
 			+ dates_json.replace( '}', r', \"checks run\":' + str( checks_run ) + r', \"checks with errors\":' + str( checks_with_errors ) + '}' )
 			+ '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'updated_topic' ] + '" ] }\n' )
 	# end loop: for device in os.listdir( '/dev' ):
@@ -216,15 +262,13 @@ signal.signal( signal.SIGTERM, handle_termination )
 hba = socket.gethostbyaddr(socket.gethostname())
 hostname = re.sub( r'\..+', '', hba[ 0 ] )
 
-sender = subprocess.Popen( shlex.split( config[ 'power' ][ 'sender' ] ), bufsize = 1, # default bufsize may gobble a whole loop of data and do nothing till the next
-		stdin = subprocess.PIPE, stdout = ( None if args.debug else subprocess.DEVNULL ),
-		stderr = ( None if args.debug else subprocess.DEVNULL ), text = True )
+spawn_sender()
 
 if args.debug:
+	if not sender:
+		sys.exit( 1 )
+
 	print( 'sender:', sender.args )
-	if sender.poll():
-		print( 'DOA! rc:', sender.poll() )
-		sys.exit(1)
 
 dates_json = ''
 queue = []
@@ -247,9 +291,9 @@ while True:
 
 	time.sleep( args.loop )
 
-sender.communicate( input = '\n\n{ "cmd":"exit" }\n' )
-
 try:
+	sender.communicate( input = '\n\n{ "cmd":"exit" }\n' )
+
 	sender.wait( timeout = 15.0 )
 except:
 	pass
