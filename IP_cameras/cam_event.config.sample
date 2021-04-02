@@ -13,6 +13,7 @@ $o{ 'mqtt event persistent timeout' } = 20 * 60;     # Seconds for persistent sa
 # MQTT Security stuff:
 $o{ 'mqtt event user' } = 'someuser';  # user/pass overrides SSL
 $o{ 'mqtt event pass' } = 'password';
+# SSL (not implemented yet)
 $o{ 'mqtt event ssl ca' }  = '/etc/ssl/cert'; # SSL_ca_path
 $o{ 'mqtt event ssl crt' } = $o{ 'base dir' } . '/ssl/mqtt.crt'; # SSL_cert_file
 $o{ 'mqtt event ssl key' } = $o{ 'base dir' } . '/ssl/mqtt.key'; # SSL_key_file

@@ -350,13 +350,23 @@ sub touch_file
 # in: none, out: none
 sub mqtt_run
 {
-  #$mqtt = Net::MQTT::Simple::SSL->new( $o{ 'mqtt event server' },
-  #  {
-  #    SSL_ca_path   => $o{ 'mqtt event ssl ca' },
-  #    SSL_cert_file => $o{ 'mqtt event ssl crt' },
-  #    SSL_key_file  => $o{ 'mqtt event ssl key' },
-  #  } );
-  $mqtt = Net::MQTT::Simple->new( $o{ 'mqtt event server' } );
+  if ( defined( $o{ 'mqtt event user' } ) )
+  {
+    $ENV{ 'MQTT_SIMPLE_ALLOW_INSECURE_LOGIN' } = 1;
+    $mqtt->login( $o{ 'mqtt event user' }, $o{ 'mqtt event pass' } // undef  );
+
+    $mqtt = Net::MQTT::Simple->new( $o{ 'mqtt event server' } );
+  }
+  else
+  {
+    die "MQTT over SSL is not implemented!";
+    #$mqtt = Net::MQTT::Simple::SSL->new( $o{ 'mqtt event server' },
+    #  {
+    #    SSL_ca_path   => $o{ 'mqtt event ssl ca' },
+    #    SSL_cert_file => $o{ 'mqtt event ssl crt' },
+    #    SSL_key_file  => $o{ 'mqtt event ssl key' },
+    #  } );
+  }
 
   $mqtt or die 'MQTT to ' . $o{ 'mqtt event server' } . ' failed: ' . $@;
 
