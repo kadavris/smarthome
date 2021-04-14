@@ -4,22 +4,24 @@ cafile = /etc/ssl/certs/ca.pem
 crt    = /etc/ssl/certs/thishost.cert.pem
 key    = /etc/smarthome/mqtt/ssl/thishost.key.pem
 auth   = ssl # 'user' or 'ssl'
-server = your.home.mqtt.domain # section name == address
+server = your.default.mqtt.server's.domain
 keepalive = 15
-clientid = someid.keep.it.unique.or.your.clients.will.fight.each.other
+clientid = someid-keep.it.unique.or.your.clients.will.fight.each.other
 
-[your.home.mqtt.domain]
+[your.default.mqtt.server.domain]
 auth = user
 user = <username>
 pass = <password>
 
-[your.cloud.com]
+[cloud-connect-stuff]
+server = your.cloud.com
 auth   = ssl
 keepalive = 60
 
-[another.one]
+[another-section]
 auth = user
-user = ${your.home.mqtt.domain:user}
-pass = ${your.home.mqtt.domain:pass}
+# you can reference other section data like this:
+user = ${your.default.mqtt.server.domain:user}
+pass = ${your.default.mqtt.server.domain:pass}
 clientid = other.instance
 

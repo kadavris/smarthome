@@ -78,7 +78,7 @@ def do_smartctl( device ):
 
 	ret = {
 		"model": "UNKNOWN", "smart": '', "temperature": "UNKNOWN", "status":"",
-		"tests done":0, "tests failed":0,
+		"tests done":0, "tests failed":0, 'testing status':'UNKNOWN',
 		"age":0,
 	}
 	attrs = []
@@ -130,7 +130,8 @@ def do_smartctl( device ):
 			if int( rm.group( 4 ) ) < int( rm.group( 6 ) ): # value < threshold - fail
 				ret[ "status" ] += ' WARN: attribute ' + name + ' value (' + rm.group( 4 ) + ') > threshold (' + rm.group( 6 ) + ').'
 
-			if id == '194':
+			# 190 Airflow_Temperature_Cel 0x0032   065   050   000    Old_age   Always       -       35
+			if id == '190' or ( id == '194' and ret[ 'temperature' ] == 'UNKNOWN' ):
 				ret[ 'temperature' ] = re.sub( r'\D.+', '', data )
 
 			#  9 Power_On_Hours          0x0032   099   099   000    Old_age   Always       -       915 (222 63 0)
@@ -208,11 +209,12 @@ def check_storage_sd():
 			print( 'device:', device )
 
 		# check if it is ata one:
-		rm = re.search( r'/devices/pci[^/]+/[^/]+/ata\d+', os.readlink( "/sys/class/block/" + device ) )
-		if not rm:
-			if args.debug:
-				print( '\t- not ata' )
-			continue
+		if sys.platform.startswith( 'linux' ):
+			rm = re.search( r'/devices/pci[^/]+/[^/]+/ata\d+', os.readlink( "/sys/class/block/" + device ) )
+			if not rm:
+				if args.debug:
+					print( '\t- not ata' )
+				continue
 
 		cf = config[ 'storage' ]
 		topic = cf[ 'device_topic' ].replace( '$device', device )
@@ -245,17 +247,17 @@ def check_storage_sd():
 			checks_run += 1
 			sctl = do_smartctl( device )
 
-			if sctl[ "status" ] != 'OK':
+			if sctl[ 'model' ] == 'UNKNOWN':
+				if args.debug:
+					print( '! smartctl failed to fetch data for:', device )
+
+				continue
+
+			if sctl[ "testing status" ] != 'OK': # failed or not running tests detected
 				checks_with_errors += 1
 				severity += 1
 
-				state.append( sctl[ "status" ] )
-
-			if sctl[ "testing status" ] != 'OK':
-				checks_with_errors += 1
-				severity += 1
-
-				state.append( sctl[ "testing status" ] )
+				state.append( "testing status: " + sctl[ "testing status" ] )
 
 			msg = '{ "model":"' + sctl[ 'model' ] + '",\n"status":"' + sctl[ "status" ] + '",\n"smart":"' + sctl[ 'smart' ] + '"'\
 					+ ',\n"tests done":' + str( sctl[ 'tests done' ] ) + ',"tests failed":' + str( sctl[ 'tests failed' ] )\
@@ -265,7 +267,7 @@ def check_storage_sd():
 				state.append( sctl[ 'tests failed' ] + ' of ' + sctl[ 'tests done' ] + ' recent tests failed!' )
 				severity += 1
 
-			if sctl[ 'status' ] != 'OK': # some value went below threshold - prefail state at least
+			if sctl[ 'status' ] != 'OK': # e.g. some value went below threshold - prefail state at least
 				state.append( sctl[ 'status' ] )
 				severity += 2
 
