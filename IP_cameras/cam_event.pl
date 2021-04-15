@@ -353,9 +353,10 @@ sub mqtt_run
   if ( defined( $o{ 'mqtt event user' } ) )
   {
     $ENV{ 'MQTT_SIMPLE_ALLOW_INSECURE_LOGIN' } = 1;
-    $mqtt->login( $o{ 'mqtt event user' }, $o{ 'mqtt event pass' } // undef  );
 
     $mqtt = Net::MQTT::Simple->new( $o{ 'mqtt event server' } );
+
+    $mqtt->login( $o{ 'mqtt event user' }, $o{ 'mqtt event pass' } // undef  );
   }
   else
   {
