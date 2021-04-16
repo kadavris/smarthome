@@ -103,6 +103,9 @@ def do_smartctl( device ):
 	for l in out.splitlines():
 		l = l.rstrip()
 
+		if l == 'SMART Self-test Log not supported':
+			ret[ 'testing status' ] = 'OK'
+
 		if place == 'body':
 			if re.match( r'ID#\s+ATTRIBUTE_NAME', l ):
 				place = 'attr'
@@ -259,7 +262,7 @@ def check_storage_sd():
 
 				state.append( "testing status: " + sctl[ "testing status" ] )
 
-			msg = '{ "model":"' + sctl[ 'model' ] + '",\n"status":"' + sctl[ "status" ] + '",\n"smart":"' + sctl[ 'smart' ] + '"'\
+			msg = '{ "model":"' + sctl[ 'model' ] + '",\n"status":"' + sctl[ "status" ] + '",\n"smart":' + sctl[ 'smart' ] \
 					+ ',\n"tests done":' + str( sctl[ 'tests done' ] ) + ',"tests failed":' + str( sctl[ 'tests failed' ] )\
 					+ ' }'
 
