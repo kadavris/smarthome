@@ -88,11 +88,34 @@ def send_message( msg ):
 
 		time.sleep( 5 )
 
+
+########################################
+# will update stats[ device ] with minute, hour or day depending on prefix
+# now it sums values for simple mean calculation
+def update_stats( device, prefix, time_value, voltage, freq ):
+	global stats
+
+	if stats[ device ][ prefix + 'start' ] != time_value:
+		stats[ device ][ prefix + 'v' ] = stats[ device ][ prefix + '_v_mean' ] + voltage
+		stats[ device ][ prefix + 'f' ] = stats[ device ][ prefix + '_f_mean' ] + freq
+		stats[ device ][ prefix + 'samples' ] = 2
+		stats[ device ][ prefix + 'start' ] = time_value
+	else:
+		stats[ device ][ prefix + 'samples' ] += 1
+		stats[ device ][ prefix + 'v' ] += voltage
+		stats[ device ][ prefix + 'f' ] += freq
+
+		stats[ device ][ prefix + '_v_mean' ] = stats[ device ][ prefix + 'v' ] // stats[ device ][ prefix + 'samples' ]
+		stats[ device ][ prefix + '_f_mean' ] = stats[ device ][ prefix + 'f' ] // stats[ device ][ prefix + 'samples' ]
+
+	if args.debug:
+		print( ' +', prefix, voltage, 'V, ', freq, 'Hz, stats V/F:', stats[ device ][ prefix + '_v_mean' ], '/', stats[ device ][ prefix + '_f_mean' ] )
+
 ########################################
 # collects data from upsc output for given device.
 # return hash: { model:model+s/n, smart:attributes json, temperature }
 def get_upsc_output( device ):
-	global args, config
+	global args, config, stats
 
 	ret = { "model": "UNKNOWN", "errors":'' }
 
@@ -102,11 +125,13 @@ def get_upsc_output( device ):
 		'device_type', # device.type: ups
 		'ups_status', # ups.status: OL
 	]
-	ret[ 'need' ] = need
 
 	if 'bulk_report' in config[ 'power' ]:
 		ret[ 'bulk_report' ] = config[ 'power' ].get( 'bulk_report' ).split( )
 		need += ret[ 'bulk_report' ]
+
+	ret[ 'need' ] = need
+	ret[ 'data' ] = {}
 
 	upsc = subprocess.Popen( [ 'upsc', device ],
 				stdin = subprocess.DEVNULL, stdout = subprocess.PIPE,
@@ -138,10 +163,10 @@ def get_upsc_output( device ):
 		if not id in need:
 			continue
 
-		ret[ id ] = value
+		ret[ 'data' ][ id ] = value
 
-		if args.debug:
-			print( 'got:', id, ':', value )
+#		if args.debug:
+#			print( 'got:', id, ':', value )
 
 		# fill in specials:
 		if id == 'device_mfr': # ups.mfr: EATON
@@ -149,12 +174,43 @@ def get_upsc_output( device ):
 		elif id == 'device_model': # ups.model: 5E 1500i
 			ret[ 'model' ] += ' ' + value
 
+	# do some stats
+	try:
+		t = time.localtime()
+
+		v = float( ret[ 'data' ][ 'input_voltage' ] )
+		f = float( ret[ 'data' ][ 'input_frequency' ] ) if 'input_frequency' in ret[ 'data' ] else 0
+		if f == 0:
+			f = float( ret[ 'data' ][ 'output_frequency' ] ) if 'output_frequency' in ret[ 'data' ] else 0
+
+		if device not in stats: # init
+			stats[ device ] = {
+				'mstart':0, 'm_v_mean':v, 'mv':v, 'mf':f, 'm_f_mean':f, 'msamples':1,
+				'hstart':0, 'h_v_mean':v, 'hv':v, 'hf':f, 'h_f_mean':f, 'hsamples':1,
+				'dstart':0, 'd_v_mean':v, 'dv':v, 'df':f, 'd_f_mean':f, 'dsamples':1
+				}
+
+		update_stats( device, 'm', t.tm_min,  v, f )
+		update_stats( device, 'h', t.tm_hour, v, f )
+		update_stats( device, 'd', t.tm_mday, v, f )
+
+		ret[ 'data' ][ 'voltage_mean_minute' ] = stats[ device ][ 'm_v_mean' ]
+		ret[ 'data' ][ 'frequency_mean_minute' ] = stats[ device ][ 'm_f_mean' ]
+
+		ret[ 'data' ][ 'voltage_mean_hour' ] = stats[ device ][ 'h_v_mean' ]
+		ret[ 'data' ][ 'frequency_mean_hour' ] = stats[ device ][ 'h_f_mean' ]
+
+		ret[ 'data' ][ 'voltage_mean_day' ] = stats[ device ][ 'd_v_mean' ]
+		ret[ 'data' ][ 'frequency_mean_day' ] = stats[ device ][ 'd_f_mean' ]
+	except:
+		pass
+
 	return ret
 
 ########################################
 # This function will check upsd/nut status
 def check_nut():
-	global args, config, sender
+	global args, config, sender, stats
 
 	cf = config[ 'power' ]
 	
@@ -191,16 +247,52 @@ def check_nut():
 
 		msg = ''
 		checks_run += 1
-		if data[ 'errors' ] != '' or ( not 'ups_status' in data ):
+		if data[ 'errors' ] != '' or ( not 'ups_status' in data[ 'data' ] ):
 			msg = data[ 'errors' ]
 			checks_with_errors += 1
 		else:
-			msg = data[ 'ups_status' ]
+			msg = data[ 'data' ][ 'ups_status' ]
+
+		# doing bulk report message. we'll use mpublish, so no quoting is needed
+		bulk_msg = '{ "model":"' + data[ 'model' ] + '", "errors":"' + data[ "errors" ] + '"'
+		
+		for k in data[ 'data' ]:
+			bulk_msg += ', "' + k + '":"' + str( data[ 'data' ][ k ] ) + '"'
+
+		bulk_msg += ' }'
+
+		if 'log_samples' in cf:
+			try:
+				logname = cf[ 'log_samples' ].replace( '$device', device )
+				open( logname, mode = 'a' ).writelines( time.strftime( '%Y-%m-%d %H:%M:%S' ) + ' ' + bulk_msg.replace( '\n', ' ' ) + '\n' )
+
+			except:
+				del cf[ 'log_samples' ]
+				print( '! Error opening log file: ', logname, ': ', sys.exc_info()[0], file = sys.stderr )
+
+			finally:
+				pass
+
+		last_rep = device + '_last_report'
+
+		if last_rep in cf:
+			if float( cf[ last_rep ] ) + float( cf[ 'report_interval' ] ) > time.time(): # too soon to report?
+				continue
+
+		cf[ last_rep ] = str( int( time.time() ) )
 
 		if args.debug:
-			print( 'sending:', msg )
+			print( '\n\n. sending: ', msg )
 
 		send_message( '{ "publish":"' + msg + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'state_topic' ] + '" ] }\n' )
+
+		# sending bulk data
+		stop = '25@5h256h256H'
+		send_message( '{ "mpublish":"' + stop + '", "retain":true, "topics":[ "' + topic + '" ] }\n' + bulk_msg + stop + '\n' )
+
+		send_message( '{ "publish":"'
+			+ dates_json.replace( '}', r', \"checks run\":' + str( checks_run ) + r', \"checks with errors\":' + str( checks_with_errors ) + '}' )
+			+ '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'updated_topic' ] + '" ] }\n' )
 
 		# quick post one-to-one data
 		if 'one_to_one' in cf:
@@ -209,8 +301,8 @@ def check_nut():
 				checks_run += 1
 				msg = ''
 
-				if a in data:
-					msg = data[ a ]
+				if a in data[ 'data' ]:
+					msg = data[ 'data' ][ a ]
 				else:
 					msg = 'one_to_one attribute is missing from report: ' + a
 					checks_with_errors += 1
@@ -218,24 +310,6 @@ def check_nut():
 				send_message( '{ "publish":"' + msg + '", "retain":true, "topics":[ "'
 							+ topic + '/' + t + '" ] }\n' )
 
-		# doing bulk report message. we'll use mpublish, so no quoting is needed
-		msg = '{ "model":"' + data[ 'model' ] + '", "errors":"' + data[ "errors" ] + '"'
-		
-		for k in data[ 'need' ]:
-			msg += ', "' + k + '":"' + ( data[ k ] if k in data else '! need-list attribute is missing from report: ' + k ) + '"'
-		
-		for k in data[ 'bulk_report' ]:
-			if k in data:
-				msg += ', "' + k + '":"' + ( data[ k ] if k in data else '? bulk_report attribute is missing from report: ' + k ) + '"'
-		
-		msg += ' }'
-
-		stop = '25@5h256h256H'
-		send_message( '{ "mpublish":"' + stop + '", "retain":true, "topics":[ "' + topic + '" ] }\n' + msg + stop + '\n' )
-
-		send_message( '{ "publish":"'
-			+ dates_json.replace( '}', r', \"checks run\":' + str( checks_run ) + r', \"checks with errors\":' + str( checks_with_errors ) + '}' )
-			+ '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'updated_topic' ] + '" ] }\n' )
 	# end loop: for device in os.listdir( '/dev' ):
 
 ####################################################
@@ -248,7 +322,7 @@ config_path = '/etc/smarthome/reporters/reporters.ini' # default
 parser = argparse.ArgumentParser( description = 'Collect electrical power info and post it to mqtt' )
 parser.add_argument( '-c', '--config', dest = 'config_path', action = 'store', default = config_path, help = 'path to non-default (' + config_path + ') config file')
 parser.add_argument( '-d', '--debug', dest = 'debug', action = 'store_true', default = False, help = 'debug mode')
-parser.add_argument( '-l', '--loop', dest = 'loop', action = 'store', type = int, default = 0, help = 'Loop forever, sleeping <int> seconds between passes' )
+parser.add_argument( '-l', '--loop', dest = 'loop', action = 'store', type = int, default = 0, help = 'Loop forever, sleeping <int> seconds between passes. Overrides config settings' )
 parser.add_argument( 'action', nargs = '?', default = '', help = 'non-default action name to run' )
 
 args = parser.parse_args()
@@ -272,8 +346,17 @@ if args.debug:
 
 dates_json = ''
 queue = []
-mounts = dict()
+stats = {}
 
+##################################
+# set necessary defaults
+if 'sample_interval' not in config[ 'power' ] or args.loop > 0:
+	config[ 'power' ][ 'sample_interval' ] = str( args.loop )
+
+if 'report_interval' not in config[ 'power' ] or args.loop > 0:
+	config[ 'power' ][ 'report_interval' ] = str( args.loop )
+
+##################################
 if args.action != '':
 	queue.append( args.action )
 else:
@@ -286,10 +369,10 @@ while True:
 	for func in queue:
 		func()
 
-	if args.loop == 0:
+	if int( config[ 'power' ][ 'sample_interval' ] ) <= 0:
 		break
 
-	time.sleep( args.loop )
+	time.sleep( int( config[ 'power' ][ 'sample_interval' ] ) )
 
 try:
 	sender.communicate( input = '\n\n{ "cmd":"exit" }\n' )

@@ -70,3 +70,19 @@ bulk_report = battery_charge
   ups_load
   ups_power
   ups_power_nominal
+
+; --------------------
+; this section is about what and how frequent to report
+; your country's standard voltage,frequency and tolerance percentages
+standard_v = 220,10
+standard_freq = 50,4
+
+; get reading every N seconds
+sample_interval = 1
+
+; comment if you don't need to log raw samples
+log_samples = /var/log/smarthome/$$device.log
+
+; report data to server every N seconds
+report_interval = 30
+
