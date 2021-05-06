@@ -108,9 +108,6 @@ def update_stats( device, prefix, time_value, voltage, freq ):
 		stats[ device ][ prefix + '_v_mean' ] = stats[ device ][ prefix + 'v' ] // stats[ device ][ prefix + 'samples' ]
 		stats[ device ][ prefix + '_f_mean' ] = stats[ device ][ prefix + 'f' ] // stats[ device ][ prefix + 'samples' ]
 
-	if args.debug:
-		print( ' +', prefix, voltage, 'V, ', freq, 'Hz, stats V/F:', stats[ device ][ prefix + '_v_mean' ], '/', stats[ device ][ prefix + '_f_mean' ] )
-
 ########################################
 # collects data from upsc output for given device.
 # return hash: { model:model+s/n, smart:attributes json, temperature }
@@ -224,13 +221,10 @@ def check_nut():
 		dev_list = upsc.communicate()[0].splitlines()
 
 	for device in dev_list:
-		if args.debug:
-			print( 'device:', device )
-
 		topic = cf[ 'device_topic' ].replace( '$device', device )
 
 		if args.debug:
-			print( '\ttopic:', topic )
+			print( 'device:', device, 'topic:', topic )
 		# topic structure:
 		# power
 		#     <dev_id>
@@ -264,22 +258,18 @@ def check_nut():
 		if 'log_samples' in cf:
 			try:
 				logname = cf[ 'log_samples' ].replace( '$device', device )
-				open( logname, mode = 'a' ).writelines( time.strftime( '%Y-%m-%d %H:%M:%S' ) + ' ' + bulk_msg.replace( '\n', ' ' ) + '\n' )
+				open( logname, mode = 'a' ).writelines( time.strftime( r'%Y-%m-%d %H:%M:%S' ) + ' ' + bulk_msg.replace( '\n', ' ' ) + '\n' )
 
 			except:
 				del cf[ 'log_samples' ]
 				print( '! Error opening log file: ', logname, ': ', sys.exc_info()[0], file = sys.stderr )
 
-			finally:
-				pass
+		next_rep = device + '_next_report'
 
-		last_rep = device + '_last_report'
+		if ( next_rep in stats ) and stats[ next_rep ] > time.time(): # too soon to report?
+			continue
 
-		if last_rep in cf:
-			if float( cf[ last_rep ] ) + float( cf[ 'report_interval' ] ) > time.time(): # too soon to report?
-				continue
-
-		cf[ last_rep ] = str( int( time.time() ) )
+		stats[ next_rep ] = time.time() + float( cf[ 'report_interval' ] )
 
 		if args.debug:
 			print( '\n\n. sending: ', msg )
@@ -313,7 +303,7 @@ def check_nut():
 	# end loop: for device in os.listdir( '/dev' ):
 
 ####################################################
-global args, config, dates_json, root_topic, sender
+global args, config, dates_json, root_topic, sender, stats
 
 config_path = '/etc/smarthome/reporters/reporters.ini' # default
 
@@ -350,11 +340,17 @@ stats = {}
 
 ##################################
 # set necessary defaults
-if 'sample_interval' not in config[ 'power' ] or args.loop > 0:
-	config[ 'power' ][ 'sample_interval' ] = str( args.loop )
+if 'sample_interval' not in config[ 'power' ]:
+	if args.loop > 0:
+		config[ 'power' ][ 'sample_interval' ] = str( args.loop )
+	else:
+		config[ 'power' ][ 'sample_interval' ] = '30' # seconds
 
-if 'report_interval' not in config[ 'power' ] or args.loop > 0:
-	config[ 'power' ][ 'report_interval' ] = str( args.loop )
+if 'report_interval' not in config[ 'power' ]:
+	if args.loop > 0:
+		config[ 'power' ][ 'report_interval' ] = str( args.loop )
+	else:
+		config[ 'power' ][ 'report_interval' ] = config[ 'power' ][ 'sample_interval' ]
 
 ##################################
 if args.action != '':
