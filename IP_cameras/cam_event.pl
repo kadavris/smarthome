@@ -4,6 +4,7 @@
 # This particular module is for event processing from PIR or other kind of security sensors.
 # It should have permissions to browse and link the camera recordings made by companion cam_service.
 # Also it may be started as a deamon, listening for events from MQTT server.
+
 #use re 'debugcolor';
 use warnings;
 use strict;
@@ -29,6 +30,7 @@ my $event_start = time; # base for snap counts
 my $log = 0; # no log will be produced
 my $persistent; # the recordings will be synced on the -p=on until the call with -p=off with the same event ID will be made
 my $snap_time; # (seconds) will snap so many records from before and after current
+my $mqtt_last_ping = 0; # timestamp of last message received. used for connectivity monitoring
 
 ####################################################
 
@@ -376,10 +378,14 @@ sub mqtt_run
 
   $debug and print "+ MQTT: run()\n";
 
-  $mqtt->run(
-      $o{ 'mqtt event topic' } => \&mqtt_got_message,
-      '#' => \&mqtt_misc
-  );
+  $mqtt->subscribe( $o{ 'mqtt event topic' }, \&mqtt_got_message );
+
+  if ( defined( $o{ 'mqtt keepalive topic' } ) )
+  {
+    $mqtt->subscribe( $o{ 'mqtt keepalive topic' }, \&mqtt_got_keepalive );
+  }
+
+  $mqtt->run( );
 
   exit(1);
 }
@@ -387,13 +393,15 @@ sub mqtt_run
 #############################################################
 # misc messages: process timeouts, etc
 # in: topic, message - ignored
-sub mqtt_misc
+sub mqtt_got_keepalive
 {
   #my ( $topic, $message ) = @_;
 
   $debug and print "--- MQTT(#): msg on topic: ", $_[ 0 ], "\n";
 
   my $t = time;
+
+  $mqtt_last_ping = $t;
 
   for my $e ( keys %mqtt_pers_timeouts )
   {
@@ -405,12 +413,15 @@ sub mqtt_misc
 
     mqtt_got_message( '<timeout>', $data->{ 'msg' } ); # stop it
   }
+
+  mqtt_send_pong();
 }
 
 #############################################################
 # one-time save.
 # in: topic, message
-# message is <event id>,<once>|<persistent on/off>,<cam1>[,<cam2>...]
+# camera message is <event id>,<once>|<persistent on/off>,<cam1>[,<cam2>...]
+# ping message is ping - used for checks on service and subscriptions
 sub mqtt_got_message
 {
   my ( $topic, $message ) = @_;
@@ -420,6 +431,14 @@ sub mqtt_got_message
   my ( $event, $mode, @cam_list ) = split ',', $message;
   $mode = lc $mode;
   $mode =~ s/^persistent //;
+
+  mqtt_send_pong();
+
+  if ( lc( $event ) eq 'ping' )
+  {
+    $mqtt_last_ping = time;
+    return;
+  }
 
   my $cmd = $o{ 'event processor' } . " -c '" . $config_path . "' -e '" . $event . "'";
   $debug and $cmd .= ' -d';
@@ -459,6 +478,14 @@ sub mqtt_got_message
   $debug and print "Running $cmd\n";
 
   system( $cmd . ' ' . join( ' ', @cam_list ) . '&' ) and print STDERR "! ERROR running $cmd\n";
+}
+
+#############################################################
+sub mqtt_send_pong
+{
+  defined( $o{ 'mqtt pong topic' } ) or return;
+
+  $mqtt->publish( $o{ 'mqtt pong topic' }, '' . time );
 }
 
 #############################################################

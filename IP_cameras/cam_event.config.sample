@@ -8,6 +8,12 @@ $o{ 'mqtt event server' } = '127.0.0.1';
 $o{ 'mqtt event topic' }  = 'hw/cameras/+/ctl/save';
    # message format: <event id/name>,once|persistent on/off,<cameras list to save from>
    # e.g. "Entrance door opened,once,camera-entrance" - will save records marked as from "camera-entrance", with event name prepended.
+
+# WARNING! '#' may generate too many messages. e.g. use topic which updates every 1 to 10 seconds
+$o{ 'mqtt keepalive topic' }  = '#';
+
+$o{ 'mqtt pong topic' }  = 'services/cam_event'; # where ping reply will be put for external control
+
 $o{ 'mqtt event persistent timeout' } = 20 * 60;     # Seconds for persistent save to be stopped if no OFF message arrived
 
 # MQTT Security stuff:
