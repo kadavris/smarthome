@@ -207,7 +207,7 @@ def get_upsc_output( device ):
 ########################################
 # This function will check upsd/nut status
 def check_nut():
-	global args, config, sender, stats
+	global args, config, log_items, sender, stats
 
 	cf = config[ 'power' ]
 	
@@ -255,14 +255,34 @@ def check_nut():
 
 		bulk_msg += ' }'
 
+		# --------------------------------
 		if 'log_samples' in cf:
 			try:
+				t = time.strftime( r'%Y-%m-%d %H:%M:%S' )
+
+				line = ''
+				if len( log_items ) > 0: # subset of data requested
+					for k in log_items:
+						if k not in data[ 'data' ]:
+							line += t + ' WARNING! upsc does not provide item "' + k + '"\n'
+							del log_items[ k ]
+
+					line += t + ' { "date":"' + t + '"'
+
+					for k in log_items:
+						line += ', "' + k + '":"' + str( data[ 'data' ][ k ] ) + '"'
+
+					line += ' }\n'
+
+				else:
+					line = t + bulk_msg.replace( '\n', ' ' ) + '\n'
+
 				logname = cf[ 'log_samples' ].replace( '$device', device )
-				open( logname, mode = 'a' ).writelines( time.strftime( r'%Y-%m-%d %H:%M:%S' ) + ' ' + bulk_msg.replace( '\n', ' ' ) + '\n' )
+				open( logname, mode = 'a' ).writelines( line )
 
 			except:
 				del cf[ 'log_samples' ]
-				print( '! Error opening log file: ', logname, ': ', sys.exc_info()[0], file = sys.stderr )
+				print( '! Error opening log file: ', logname, ':', sys.exc_info()[0], file = sys.stderr )
 
 		next_rep = device + '_next_report'
 
@@ -271,6 +291,7 @@ def check_nut():
 
 		stats[ next_rep ] = time.time() + float( cf[ 'report_interval' ] )
 
+		# --------------------------------
 		if args.debug:
 			print( '\n\n. sending: ', msg )
 
@@ -303,7 +324,7 @@ def check_nut():
 	# end loop: for device in os.listdir( '/dev' ):
 
 ####################################################
-global args, config, dates_json, root_topic, sender, stats
+global args, config, dates_json, root_topic, log_items, sender, stats
 
 config_path = '/etc/smarthome/reporters/reporters.ini' # default
 
@@ -337,6 +358,11 @@ if args.debug:
 dates_json = ''
 queue = []
 stats = {}
+
+# pre-caching the list of items to put in the log
+log_items = []
+if 'log_items' in config[ 'power' ]:
+	log_items = config[ 'power' ].get( 'log_items' ).split( )
 
 ##################################
 # set necessary defaults

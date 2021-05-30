@@ -78,10 +78,15 @@ standard_v = 220,10
 standard_freq = 50,4
 
 ; get reading every N seconds
-sample_interval = 1
+sample_interval = 10
 
 ; comment if you don't need to log raw samples
 log_samples = /var/log/smarthome/$$device.log
+log_items = input_voltage
+  voltage_mean_minute
+  frequency_mean_minute
+  battery_charge
+  ups_status
 
 ; report data to server every N seconds
 report_interval = 30
