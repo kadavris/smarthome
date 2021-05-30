@@ -1,5 +1,5 @@
 #!/bin/bash
-# This script is used to create a Windows service for running reporder in background
+# This script is used to create a Windows service for running reporter in the background
 # CygWin is assumed to be installed
 svcname='mqtt-storage-sd-reports'
 
