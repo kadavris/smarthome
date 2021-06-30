@@ -6,364 +6,413 @@ import configparser
 import os
 import os.path
 import re
+import shlex
 import signal
 import socket
+import subprocess
 import sys
-import shlex, subprocess
 import time
+
 
 #############################################################
 def handle_termination(signum, frame):
-	if sender:
-		sender.terminate()
+    if sender:
+        sender.terminate()
 
-	sys.exit(0)
+    sys.exit(0)
+
 
 #############################################################
-def load_config( c_file ):
-	global args, config
+def load_config(c_file):
+    global args, config
 
-	file = c_file
+    file = c_file
 
-	if not os.path.exists( file ):
-		if re.search( r'/', file ):
-			print( "Can't open config: " + file )
-			sys.exit(1)
+    if not os.path.exists(file):
+        if re.search(r'/', file):
+            print("! Can't open config: " + file, file=sys.stderr)
+            sys.exit(1)
 
-		file = os.path.dirname( sys.argv[0] ) + '/' + c_file
+        file = os.path.dirname(sys.argv[0]) + '/' + c_file
 
-		if not os.path.exists( file ):
-			file = '/etc/smarthome/reporters/' + c_file
+        if not os.path.exists(file):
+            file = '/etc/smarthome/reporters/' + c_file
 
-	args.debug and print( "+ Loading config: " + file )
+    if args.debug:
+        print("+ Loading config:", file, file=sys.stderr)
 
-	config = configparser.ConfigParser( interpolation = configparser.ExtendedInterpolation() )
-	config.read( file )
+    config = configparser.ConfigParser(interpolation=configparser.ExtendedInterpolation())
+    config.read(file)
+
 
 ########################################
 def spawn_sender():
-	global args, config, sender
+    global args, config, sender
 
-	sender = subprocess.Popen( shlex.split( config[ 'storage' ][ 'sender' ] ), bufsize = 1, # default bufsize may gobble a whole loop of data and do nothing till the next
-			stdin = subprocess.PIPE, stdout = ( None if args.debug else subprocess.DEVNULL ),
-			stderr = ( None if args.debug else subprocess.DEVNULL ), text = True )
+    if args.debug:
+        print("+ Spawning sender process:",config['storage']['sender'], file=sys.stderr)
 
-	if sender.poll():
-		if sender.returncode > 0:
-			print( '? ERROR with running ', sender.args, ": exitted abnormally with rc:", sender.returncode )
-			sys.exit( 1 )
+    sender = subprocess.Popen(shlex.split(config['storage']['sender']), bufsize=1,
+                              # default bufsize may gobble a whole loop of data and do nothing till the next
+                              stdin=subprocess.PIPE,
+                              stdout=(None if args.debug or config['storage']['sender'].find('--debug') else subprocess.DEVNULL),
+                              stderr=(None if args.debug or config['storage']['sender'].find('--debug') else subprocess.DEVNULL),
+                              text=True)
+
+    if sender.poll():  # poll() return None if process is still there
+        print('? ERROR with running ', sender.args, ": exited ",
+              ( "abnormally" if sender.returncode > 0 else "W/O error" ),
+              "with rc:", sender.returncode, file=sys.stderr)
+        sys.exit(1)
+
+    time.sleep(3.0) #  trying to debug some strange re-connection issues
+
+
+########################################
+def send_message(*msg):
+    global sender
+
+    try_number = 1
+    while True:
+        if sender.poll():  # check if it is still alive (not None)
+            spawn_sender()
+
+        try:
+            if args.debug:
+                print('> Send: ', msg)
+
+            sender.stdin.write(''.join(msg))
+        except:
+            if args.debug:
+                exc_type, exc_val, traceback = sys.exc_info()
+                if exc_val:
+                    exc_val = ','.join(exc_val.args)
+                else:
+                    exc_val = 'UNKNOWN REASON'
+                print("! Sending failed (", exc_val, ")", file=sys.stderr)
+
+            try_number += 1
+            if try_number > 3:
+                try_number = 1
+                print("!!! Respawning.", file=sys.stderr)
+                spawn_sender()
+        else:
+            break
+
+        time.sleep(3.0)
+
 
 ########################################
 def get_mounts():
-	global args, config, sender
+    global args, config, sender
 
-	mf = open( '/proc/mounts', 'r' )
+    mf = open('/proc/mounts', 'r')
 
-	while True:
-		l = mf.readline()
+    while True:
+        line = mf.readline()
 
-		if len( l ) == 0:
-			break
+        if len(line) == 0:
+            break
 
-		rm = re.match( r'^(\S+)\s+(\S+)\s+(\S+)\s+(.+)', l ) # /dev/X mount_point fs_type options
+        rm = re.match(r'^(\S+)\s+(\S+)\s+(\S+)\s+(.+)', line)  # /dev/X mount_point fs_type options
 
-		mounts[ rm.group( 2 ) ] = { 'disk': rm.group( 1 ), 'fstype': rm.group( 3 ), 'options': rm.group( 4 ) }
+        mounts[rm.group(2)] = {'disk': rm.group(1), 'fstype': rm.group(3), 'options': rm.group(4)}
 
-	mf.close()
+    mf.close()
+
 
 ########################################
 # collects data from smartctl. return hash: { model:model+s/n, smart:attributes json, temperature }
-def do_smartctl( device ):
-	global args, config
+def do_smartctl(device):
+    global args, config
 
-	ret = {
-		"model": "UNKNOWN", "smart": '', "temperature": "UNKNOWN", "status":"",
-		"tests done":0, "tests failed":0, 'testing status':'UNKNOWN',
-		"age":0,
-	}
-	attrs = []
+    ret = {
+        "age": 0, "model": "UNKNOWN", "smart": '', "temperature": "UNKNOWN", "status": "",
+        "tests done": 0, "tests failed": 0, 'testing status': 'UNKNOWN',
+    }
+    attrs = []
 
-	params = shlex.split( config[ 'storage' ][ 'smartctl' ] )
-	params.append( '/dev/' + device )
-	sctl = subprocess.Popen( params, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True )
+    params = shlex.split(config['storage']['smartctl'])
+    params.append('/dev/' + device)
+    sctl = subprocess.Popen(params, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-	if sctl.poll():
-		if sctl.returncode > 0:
-			ret[ "status" ] = ',"smartctl error":"ended with rc: ' + sctl.returncode + '"'
-			print( ret[ "status" ] )
-		return ret
+    if sctl.poll():
+        if sctl.returncode > 0:
+            ret["status"] = ',"smartctl error":"ended with rc: ' + str(sctl.returncode) + '"'
+            print(ret["status"])
+        return ret
 
-	out, err = sctl.communicate() # communicate() will return all output at once
-	if err != '':
-		ret[ "status" ] = ',"smartctl error":"' + err + "'"
-		print( ret[ "status" ] )
-		return ret
+    out, err = sctl.communicate()  # communicate() will return all output at once
+    if err != '':
+        ret["status"] = ',"smartctl error":"' + err + "'"
+        print(ret["status"])
+        return ret
 
-	place = 'body' # basic state machine
-	for l in out.splitlines():
-		l = l.rstrip()
+    place = 'body'  # basic state machine
+    for line in out.splitlines():
+        line = line.rstrip()
 
-		if l == 'SMART Self-test Log not supported':
-			ret[ 'testing status' ] = 'OK'
+        if line == 'SMART Self-test Log not supported':
+            ret['testing status'] = 'OK'
 
-		if place == 'body':
-			if re.match( r'ID#\s+ATTRIBUTE_NAME', l ):
-				place = 'attr'
-				continue
+        if place == 'body':
+            if re.match(r'ID#\s+ATTRIBUTE_NAME', line):
+                place = 'attr'
+                continue
 
-			if re.match( r'Num\s+Test_Description', l ):
-				place = 'tests'
-				continue
+            if re.match(r'Num\s+Test_Description', line):
+                place = 'tests'
+                continue
 
-		if place == 'attr':
-			# attributes array
-			#ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
-			#1   2                       3        4     5     6      7         8        9           10
-			rm = re.match( r'\D*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)', l )
-			if not rm:
-				place = 'body'
-				continue
+        if place == 'attr':
+            # attributes array
+            # ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+            # 1   2                       3        4     5     6      7         8        9           10
+            rm = re.match(r'\D*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.+)', line)
+            if not rm:
+                place = 'body'
+                continue
 
-			id = rm.group( 1 )
-			name = re.sub( '_+', ' ', rm.group( 2 ) )
-			data = re.sub( '"', r'\\"', rm.group( 10 ) )
+            id_num = rm.group(1)
+            name = re.sub('_+', ' ', rm.group(2))
+            data = re.sub('"', r'\\"', rm.group(10))
 
-			attrs.append( '"' + id + '":{ "name":"' + name + '", "data":"' + data + '" }' )
+            attrs.append('"' + id_num + '":{ "name":"' + name + '", "data":"' + data + '" }')
 
-			if int( rm.group( 4 ) ) < int( rm.group( 6 ) ): # value < threshold - fail
-				ret[ "status" ] += ' WARN: attribute ' + name + ' value (' + rm.group( 4 ) + ') > threshold (' + rm.group( 6 ) + ').'
+            if int(rm.group(4)) < int(rm.group(6)):  # value < threshold - fail
+                ret["status"] += ' WARN: attribute ' + name \
+                                 + ' value (' + rm.group(4) + ') > threshold (' + rm.group(6) + ').'
 
-			# 190 Airflow_Temperature_Cel 0x0032   065   050   000    Old_age   Always       -       35
-			if id == '190' or ( id == '194' and ret[ 'temperature' ] == 'UNKNOWN' ):
-				ret[ 'temperature' ] = re.sub( r'\D.+', '', data )
+            # 190 Airflow_Temperature_Cel 0x0032   065   050   000    Old_age   Always       -       35
+            if id_num == '190' or (id_num == '194' and ret['temperature'] == 'UNKNOWN'):
+                ret['temperature'] = re.sub(r'\D.+', '', data)
 
-			#  9 Power_On_Hours          0x0032   099   099   000    Old_age   Always       -       915 (222 63 0)
-			# we'll use it to check if the tests are fresh enough
-			elif id == '9':
-				ret[ 'age' ] = int( re.sub( '\D.*', '', data ) )
+            #  9 Power_On_Hours          0x0032   099   099   000    Old_age   Always       -       915 (222 63 0)
+            # we'll use it to check if the tests are fresh enough
+            elif id_num == '9':
+                ret['age'] = int(re.sub(r'\D.*', '', data))
 
-			# other attributes to consider for special processing. possibly for later:
-			#  5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       0
-			#187 Reported_Uncorrect      0x0032   100   100   000    Old_age   Always       -       0
-			#197 Current_Pending_Sector  0x0012   100   100   000    Old_age   Always       -       0
-			#198 Offline_Uncorrectable   0x0010   100   100   000    Old_age   Offline      -       0
-			#199 UDMA_CRC_Error_Count    0x003e   200   200   000    Old_age   Always       -       0
-			#241 Total_LBAs_Written      0x0000   100   253   000    Old_age   Offline      -       28754942980
-			#242 Total_LBAs_Read         0x0000   100   253   000    Old_age   Offline      -       18442954018
+            # other attributes to consider for special processing. possibly for later:
+            #   5 Reallocated_Sector_Ct   0x0033   100   100   010    Pre-fail  Always       -       0
+            # 187 Reported_Uncorrect      0x0032   100   100   000    Old_age   Always       -       0
+            # 197 Current_Pending_Sector  0x0012   100   100   000    Old_age   Always       -       0
+            # 198 Offline_Uncorrectable   0x0010   100   100   000    Old_age   Offline      -       0
+            # 199 UDMA_CRC_Error_Count    0x003e   200   200   000    Old_age   Always       -       0
+            # 241 Total_LBAs_Written      0x0000   100   253   000    Old_age   Offline      -       28754942980
+            # 242 Total_LBAs_Read         0x0000   100   253   000    Old_age   Offline      -       18442954018
 
-			continue
+            continue
 
-		if place == 'tests':
-			#Num  Test_Description    Status                  Remaining  LifeTime(hours)  LBA_of_first_error
-			## 1  Short offline       Completed without error       00%       897         -
-			rm = re.match( r'\D*(\d+).+?(\d+)%\s+(\d+)\s+(.+)', l )
+        if place == 'tests':
+            # Num  Test_Description    Status                  Remaining  LifeTime(hours)  LBA_of_first_error
+            # 1  Short offline       Completed without error       00%       897         -
+            rm = re.match(r'\D*(\d+).+?(\d+)%\s+(\d+)\s+(.+)', line)
 
-			if not rm:
-				place = 'body'
-				continue
+            if not rm:
+                place = 'body'
+                continue
 
-			# account for complete tests only
-			if rm.group( 2 ) == '00':
-				ret[ 'tests done' ] += 1
-				if rm.group( 4 ) != '-':
-					ret[ 'tests failed' ] += 1
+            # account for complete tests only
+            if rm.group(2) == '00':
+                ret['tests done'] += 1
+                if rm.group(4) != '-':
+                    ret['tests failed'] += 1
 
-			# check if most recent test is fresh enough
-			last_test_age = ret[ 'age' ] - int( rm.group( 3 ) )
+            # check if most recent test is fresh enough
+            last_test_age = ret['age'] - int(rm.group(3))
 
-			if ret[ 'tests done' ] == 0 or ( rm.group( 1 ) == '1' and last_test_age > 24 * 7 ): # more than week
-				ret[ 'testing status' ] = "tests didn't performed for " + str( int( last_test_age / 24 ) ) + " days"
-			else:
-				ret[ 'testing status' ] = "OK"
+            if ret['tests done'] == 0 or (rm.group(1) == '1' and last_test_age > 24 * 7):  # more than week
+                ret['testing status'] = "tests didn't performed for " + str(int(last_test_age / 24)) + " days"
+            else:
+                ret['testing status'] = "OK"
 
-			continue
+            continue
 
-		if place == 'body':
-			# header:
-			rm = re.match( r'Device Model:\s+(.+)', l )
-			if rm:
-				ret[ 'model' ] = "Model: " + rm.group( 1 )
+        if place == 'body':
+            # header:
+            rm = re.match(r'Device Model:\s+(.+)', line)
+            if rm:
+                ret['model'] = "Model: " + rm.group(1)
 
-			rm = re.match( r'Serial Number:\s+(.+)', l )
-			if rm:
+            rm = re.match(r'Serial Number:\s+(.+)', line)
+            if rm:
+                ret['model'] += ", S/N: " + rm.group(1)
+            continue
 
-				ret[ 'model' ] += ", S/N: " + rm.group( 1 )
-			continue
+    sctl.terminate()
 
-	sctl.terminate()
+    if ret['status'] == '':
+        ret['status'] = 'OK'
 
-	if ret[ 'status' ] == '':
-		ret[ 'status' ] = 'OK'
+    ret['smart'] = '{\n  ' + ",\n  ".join(attrs) + '\n}'
 
-	ret[ 'smart' ] = '{\n  ' + ",\n  ".join( attrs ) + '\n}'
+    return ret
 
-	return ret
 
 ########################################
 # This function will check /dev/sd?
 def check_storage_sd():
-	global args, config, sender
+    global args, config
 
-	for device in os.listdir( '/dev' ):
-		if not re.match( 'sd[a-z]$', device ):
-			continue
+    for device in os.listdir('/dev'):
+        if not re.match('sd[a-z]$', device):
+            continue
 
-		if args.debug:
-			print( 'device:', device )
+        if args.debug:
+            print('+ device:', device, file=sys.stderr)
 
-		# check if it is ata one:
-		if sys.platform.startswith( 'linux' ):
-			rm = re.search( r'/devices/pci[^/]+/[^/]+/ata\d+', os.readlink( "/sys/class/block/" + device ) )
-			if not rm:
-				if args.debug:
-					print( '\t- not ata' )
-				continue
+        # check if it is ata one:
+        if sys.platform.startswith('linux'):
+            rm = re.search(r'/devices/pci[^/]+/[^/]+/ata\d+', os.readlink("/sys/class/block/" + device))
+            if not rm:
+                if args.debug:
+                    print('- not an ATA', file=sys.stderr)
+                continue
 
-		cf = config[ 'storage' ]
-		topic = cf[ 'device_topic' ].replace( '$device', device )
+        cf = config['storage']
+        topic = cf['device_topic'].replace('$device', device)
 
-		# we will count the configured checks to report if none were enabled actually
-		checks_run = 0
-		checks_with_errors = 0
+        # we will count the configured checks to report if none were enabled actually
+        checks_run = 0
+        checks_with_errors = 0
 
-		state = [] # we'll try to determine it by any test enabled
-		severity = 0 # how bad troubles are. 0-OK, 1-warn, >1 - crit
+        state = []  # we'll try to determine it by any test enabled
+        severity = 0  # how bad troubles are. 0-OK, 1-warn, >1 - crit
 
-		# doing check_ide_smart run if configured
-		if 'check_ide_smart' in cf:
-			checks_run += 1
-			params = shlex.split( cf[ 'check_ide_smart' ] )
-			params.append( '/dev/' + device )
-			cis = subprocess.Popen( params, stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True )
+        # doing check_ide_smart run if configured
+        if 'check_ide_smart' in cf:
+            checks_run += 1
+            params = shlex.split(cf['check_ide_smart'])
+            params.append('/dev/' + device)
+            cis = subprocess.Popen(params, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-			st, err = cis.communicate() # communicate will slurp output and close pipe
-			st = re.sub( '^OK .*', 'OK', st.rstrip() ) # strip out clutter
+            st, err = cis.communicate()  # communicate will slurp output and close pipe
+            st = re.sub('^OK .*', 'OK', st.rstrip())  # strip out clutter
 
-			if st != 'OK' or err != '':
-				checks_with_errors += 1
-				state.append( st + '(' + err + ')' )
-				severity += 1
+            if st != 'OK' or err != '':
+                checks_with_errors += 1
+                state.append(st + '(' + err + ')')
+                severity += 1
 
-		# doing smartctl run if configured
-		sctl = {}
-		if 'smartctl' in cf:
-			checks_run += 1
-			sctl = do_smartctl( device )
+        # doing smartctl run if configured
+        if 'smartctl' in cf:
+            checks_run += 1
+            sctl = do_smartctl(device)
 
-			if sctl[ 'model' ] == 'UNKNOWN':
-				if args.debug:
-					print( '! smartctl failed to fetch data for:', device )
+            if sctl['model'] == 'UNKNOWN':
+                if args.debug:
+                    print('! smartctl failed to fetch data for:', device, file=sys.stderr)
 
-				continue
+                continue
 
-			if sctl[ "testing status" ] != 'OK': # failed or not running tests detected
-				checks_with_errors += 1
-				severity += 1
+            if sctl["testing status"] != 'OK':  # failed or not running tests detected
+                checks_with_errors += 1
+                severity += 1
 
-				state.append( "testing status: " + sctl[ "testing status" ] )
+                state.append("testing status: " + sctl["testing status"])
 
-			msg = '{ "model":"' + sctl[ 'model' ] + '",\n"status":"' + sctl[ "status" ] + '",\n"smart":' + sctl[ 'smart' ] \
-					+ ',\n"tests done":' + str( sctl[ 'tests done' ] ) + ',"tests failed":' + str( sctl[ 'tests failed' ] )\
-					+ ' }'
+            msg = '{ "model":"' + sctl['model'] + '",\n"status":"' + sctl["status"] + '",\n"smart":' + sctl['smart'] \
+                  + ',\n"tests done":' + str(sctl['tests done']) + ',"tests failed":' + str(sctl['tests failed']) \
+                  + ' }'
 
-			if sctl[ 'tests failed' ] > 0:
-				state.append( sctl[ 'tests failed' ] + ' of ' + sctl[ 'tests done' ] + ' recent tests failed!' )
-				severity += 1
+            if sctl['tests failed'] > 0:
+                state.append(sctl['tests failed'] + ' of ' + sctl['tests done'] + ' recent tests failed!')
+                severity += 1
 
-			if sctl[ 'status' ] != 'OK': # e.g. some value went below threshold - prefail state at least
-				state.append( sctl[ 'status' ] )
-				severity += 2
+            if sctl['status'] != 'OK':  # e.g. some value went below threshold - prefail state at least
+                state.append(sctl['status'])
+                severity += 2
 
-			# we'll use mpublish, so no quoting needed
-			stop = '25@5h256h256H'
+            # we'll use mpublish, so no quoting needed
+            stop = '25@5h256h256H'
 
-			if sender.poll(): # check if it is still alive
-				spawn_sender()
+            send_message('{ "mpublish":"', stop, '", "retain":true, "topics":[ "', topic, '" ] }\n',
+                         msg, stop, '\n')
+            send_message('{ "publish":"', sctl['temperature'], '", "retain":true, "topics":[ "', topic, '/',
+                         cf['temperature_topic'], '" ] }\n')
 
-			sender.stdin.write( '{ "mpublish":"' + stop + '", "retain":true, "topics":[ "' + topic + '" ] }\n' + msg + stop + '\n' )
-			sender.stdin.write( '{ "publish":"' + sctl[ 'temperature' ] + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'temperature_topic' ] + '" ] }\n' )
+        if checks_run > 0:  # so we got somethig meaningful to report here
 
-		if checks_run > 0: # so we got somethig meaningful to report here
-			st = ''
+            if severity == 0:
+                st = 'OK'
+            else:
+                st = ('WARNING: ' if severity == 1 else 'CRITICAL: ') + ', '.join(state).replace('"', r'\"')
 
-			if severity == 0:
-				st = 'OK'
-			else:
-				st = ( 'WARNING: ' if severity == 1 else 'CRITICAL: ' ) + ', '.join( state ).replace( '"', r'\"' )
+            send_message('{ "publish":"', st, '", "retain":true, "topics":[ "',
+                         topic, '/', cf['state_topic'], '" ] }\n')
 
-			if sender.poll(): # check if it is still alive
-				spawn_sender()
+            send_message('{ "publish":"', dates_json.replace('}', ''),
+                         r', \"checks run\":', str(checks_run),
+                         r', \"checks with errors\":', str(checks_with_errors), '}',
+                         '", "retain":true, "topics":[ "', topic, '/', cf['updated_topic'], '" ] }\n')
 
-			sender.stdin.write( '{ "publish":"' + st + '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'state_topic' ] + '" ] }\n' )
 
-			sender.stdin.write( '{ "publish":"' + dates_json.replace( '}', r', \"checks run\":' + str( checks_run )
-				+ r', \"checks with errors\":' + str( checks_with_errors )+ '}' )
-				+ '", "retain":true, "topics":[ "' + topic + '/' + cf[ 'updated_topic' ] + '" ] }\n' )
-	# end loop: for device in os.listdir( '/dev' ):
+# end loop: for device in os.listdir( '/dev' ):
 
 ########################################
 def check_storage():
-	check_storage_sd() # do low-level first
+    check_storage_sd()  # do low-level first
+
 
 ####################################################
-global args, config, dates_json, root_topic, sender
+global config, dates_json, root_topic, sender
 
-config_path = '/etc/smarthome/reporters/reporters.ini' # default
+config_path = '/etc/smarthome/reporters/reporters.ini'  # default
 
 ####################################################
 
-parser = argparse.ArgumentParser( description = 'Collect state info from /dev/sdX and other storage and post it to mqtt' )
-parser.add_argument( '-c', '--config', dest = 'config_path', action = 'store', default = config_path, help = 'path to non-default (' + config_path + ') config file')
-parser.add_argument( '-d', '--debug', dest = 'debug', action = 'store_true', default = False, help = 'debug mode')
-parser.add_argument( '-l', '--loop', dest = 'loop', action = 'store', type = int, default = 0, help = 'Loop forever, sleeping <int> seconds between passes' )
-parser.add_argument( 'action', nargs = '?', default = '', help = 'non-default action name to run' )
+parser = argparse.ArgumentParser(description="Collect state info from /dev/sdX and other storage and post it to mqtt."
+                                             "\nV1.1. Copyright (c) 2021+ by Andrej Pakhutin")
+parser.add_argument('-c', '--config', dest='config_path', action='store', default=config_path,
+                    help='path to non-default (' + config_path + ') config file')
+parser.add_argument('-d', '--debug', dest='debug', action='store_true', default=False, help='debug mode')
+parser.add_argument('-l', '--loop', dest='loop', action='store', type=int, default=0,
+                    help='Loop forever, sleeping <int> seconds between passes')
+parser.add_argument('action', nargs='?', default='', help='non-default action name to run')
 
 args = parser.parse_args()
 
-load_config( args.config_path )
+load_config(args.config_path)
 
 hba = socket.gethostbyaddr(socket.gethostname())
-hostname = re.sub( r'\..+', '', hba[ 0 ] )
+hostname = re.sub(r'\..+', '', hba[0])
 
 # mqtt sender script tend to hang up (why no SIGPIPE on stdin read?) if we exit hastily. trying to avoid this
-signal.signal( signal.SIGINT,  handle_termination )
-signal.signal( signal.SIGTERM, handle_termination )
+signal.signal(signal.SIGINT, handle_termination)
+signal.signal(signal.SIGTERM, handle_termination)
 
 spawn_sender()
-
-if args.debug:
-	print( 'sender:', sender.args )
 
 dates_json = ''
 queue = []
 mounts = dict()
 
 if args.action != '':
-	queue.append( args.action )
+    queue.append(args.action)
 else:
-	queue = [ check_storage ]
+    queue = [check_storage]
 
 while True:
-	dates_json = '{ "date":"' + time.ctime() + '", "timestamp":' + str( int( time.time() ) ) + ' }'
-	dates_json = dates_json.replace( r'"', r'\"')
+    dates_json = '{ "date":"' + time.ctime() + '", "timestamp":' + str(int(time.time())) + ' }'
+    dates_json = dates_json.replace(r'"', r'\"')
 
-	for func in queue:
-		if sender.poll():
-			if sender.returncode > 0:
-				print( '? NOTE:', sender.args, "exitted abnormally with rc:", sender.returncode )
-				spawn_sender()
-		func()
+    for func in queue:
+        if sender.poll():
+            if sender.returncode > 0:
+                print('? NOTE:', sender.args, "exited abnormally with rc:", sender.returncode, file=sys.stderr)
+                spawn_sender()
+        func()
 
-	if args.loop == 0:
-		break
+    if args.loop == 0:
+        break
 
-	time.sleep( args.loop )
+    time.sleep(args.loop)
 
-sender.communicate( input = '\n\n{ "cmd":"exit" }\n' )
+sender.communicate(input='\n\n{ "cmd":"exit" }\n')
 
 try:
-	sender.wait( timeout = 5.0 )
+    sender.wait(timeout=5.0)
 except:
-	pass
+    pass
 
 sender.terminate()
